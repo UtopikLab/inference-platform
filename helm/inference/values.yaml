@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Inference chart values: llama.cpp inference servers (one per Tesla P40).
+# ---------------------------------------------------------------------------
+
+# Namespace where this chart's resources are placed.
+namespace: "inference"
+
+# Default image registry for containerd (K3s host). See inference/common.sh.
+global:
+  IMAGE_REGISTRY: "ghcr.io"
+
+# ---------------------------------------------------------------------------
+# Inference servers (namespace: inference). llama.cpp image VERIFIED real.
+# ---------------------------------------------------------------------------
+# The NVIDIA device-plugin chart is a sub-chart, gated by this flag.
+nvidia-device-plugin:
+  enabled: true
+  # The chart enforces a guard against the 'default' namespace; set true so the
+  # chart renders when this parent chart is templated/installed in 'default'.
+  allowDefaultNamespace: true
+  # The sub-chart scopes its namespace-scoped resources (Namespace, DaemonSet,
+  # ServiceAccount) to the parent release namespace via this field. Without it,
+  # `helm template` renders them under 'default' and a live `helm install` would
+  # place them in the wrong namespace (collision with the live gpu-namespace
+  # device-plugin). Set to the live device-plugin namespace.
+  # namespaceOverride: gpu
+  securityContext:
+    privileged: true
+    allowPrivilegeEscalation: true
+    readOnlyRootFilesystem: null
+    runAsNonRoot: null
+    runAsUser: null
+    runAsGroup: null
+    capabilities:
+      add: []
+      drop: []
+    seLinuxOptions: {}
+    seccompProfile: null
+
+inference:
+  # Model-free native router; requesters select and download HF models via /models.
+  # Official CUDA image b11783, registry manifest verified 2026-10-21.
+  image: "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:1bacc872b168d2d10bfd8c220336f5a2cd464c07605936ec146ee5198832ffce"
+  imagePullPolicy: Always
+  # Shared pull secret applied to all containers.
+  imagePullSecrets:
+  - name: code-factory-ghcr-pull
+  # Per-GPU server argument ConfigMaps. One entry per GPU, numeric index used by
+  # the template so they render without needing `helm install ... -f
+  # inference-configmaps.yaml`.
+  configMaps:
+  - name: llama-server-args-gpu0
+    model:
+      model-dir: /models
+      model-format: gguf
+      ctx-size: "32768"
+      tensor-type: q4_km
+      port: "8000"
+      host: "0.0.0.0"
+      keep-ctx: "0"
+      no-display: "true"
+  - name: llama-server-args-gpu1
+    model:
+      model-dir: /models
+      model-format: gguf
+      ctx-size: "32768"
+      tensor-type: q4_km
+      port: "8000"
+      host: "0.0.0.0"
+      keep-ctx: "0"
+      no-display: "true"
+  # GPU device IDs pinned per pod (Tesla P40, no tensor cores).
+  gpuDeviceIds:
+    gpu0: "0"
+    gpu1: "1"
+  # Replicas per deployment; fixed at one to isolate each GPU and native cache.
+  gpuCount: 1
+  # Resources: full P40 (23 GiB) requested to prevent oversubscription.
+  resources:
+    # CPU resource budget for the llama.cpp server pods.
+    cpuRequest: "1"
+    cpuLimit: "2"
+    # Set to "1" to request a physical GPU per pod. The nvidia-device-plugin
+    # DaemonSet runs privileged now (privileged: true) so NVML can enumerate the
+    # Tesla P40s and the node reports nvidia.com/gpu: 2. Flip "gpu" to "1" to
+    # schedule GPU inference; keep "gpu: 0" only as a fallback for nodes where
+    # the device-plugin cannot run (no healthy devices).
+    gpu: "1"
+    memory: "2Gi"
+  # Ingress (Traefik, shipped by K3s).
+  ingress:
+    host: inference.local
+    path: /v1
+    entrypoints: websecure
+    middlewares: default@kubernetes/tcp-security
+    method: ANY
+  # Native cache storage uses the existing NVMe hostPath, not a provisioned PVC.
+  pvc:
+    name: inference-models
+    mountPath: /mnt/k8s-local-nvme
