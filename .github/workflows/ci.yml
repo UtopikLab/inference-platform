@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,3 +29,34 @@ jobs:
         run: |
           helm lint --strict helm/inference
           helm template inference helm/inference --namespace inference
+
+  publish-chart:
+    if: ${{ vars.HELM_CHART_PUBLISH_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    needs: chart-validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Add NVIDIA Helm repository
+        run: helm repo add nvidia https://nvidia.github.io/k8s-device-plugin
+
+      - name: Build locked dependencies
+        run: helm dependency build helm/inference
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_USERNAME" --password-stdin
+
+      - name: Package and publish inference chart
+        run: |
+          mkdir -p "$RUNNER_TEMP/chart-package"
+          helm package helm/inference --destination "$RUNNER_TEMP/chart-package"
+          helm push "$RUNNER_TEMP/chart-package"/inference-*.tgz oci://ghcr.io/utopiklab/inference-platform
