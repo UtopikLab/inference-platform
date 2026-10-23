@@ -1,0 +1,130 @@
+{{/*
+Inference server Deployments (llama.cpp, one per Tesla P40).
+Faithful to inference/deployment.yaml (Deployments inference-server-gpu{0,1}).
+*/}}
+# ---------------------------------------------------------------------------
+# Inference server Deployments: two GPU-bound llama.cpp pods, one per P40.
+# Each pod runs the OpenAI-compatible server with the per-GPU args ConfigMap
+# mounted at /etc/llama-server-args and native download cache on shared hostPath.
+# ---------------------------------------------------------------------------
+{{- $ns := .Values.namespace -}}
+{{- $inf := .Values.inference -}}
+{{- range $idx, $cfg := $inf.configMaps }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $cfg.name }}
+  namespace: {{ $ns }}
+  labels:
+    app: {{ $.Chart.Name | quote }}
+    component: {{ $.Release.Name | default "inference" | quote }}
+    app.kubernetes.io/component: inference-server
+    app.kubernetes.io/managed-by: Helm
+    gpu: "{{ $idx }}"
+spec:
+  # One replica per GPU: cap the pod count to available GPU capacity so the
+  # Deployment can never over-subscribe GPUs (prevents the pending/insufficient
+  # GPU scheduling race). Set via inference.gpuCount.
+  replicas: {{ $inf.gpuCount | default 1 }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: inference-server
+      gpu: "{{ $idx }}"
+  template:
+    metadata:
+      labels:
+        app: inference-server
+        gpu: "{{ $idx }}"
+    spec:
+      imagePullSecrets:
+        {{- toYaml $inf.imagePullSecrets | nindent 8 }}
+      # Single-node cluster: spread one pod per GPU so both cards are used.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["inference-server"]
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: llama-server
+          image: {{ $inf.image }}
+          imagePullPolicy: {{ $inf.imagePullPolicy | default "Always" }}
+          args:
+            - --models-max
+            - "1"
+            - --ctx-size
+            - {{ (index $cfg.model "ctx-size") | default "32768" | quote }}
+            {{- if (index $cfg.model "flash-attn") }}
+            - --flash-attn
+            - "on"
+            {{- end }}
+            - --host
+            - {{ (index $cfg.model "host") | default "0.0.0.0" | quote }}
+            - --port
+            - {{ (index $cfg.model "port") | default "8000" | quote }}
+          env:
+            - name: LLAMA_CACHE
+              value: {{ printf "%s/llama.cpp/%s" (index $cfg.model "model-dir") $cfg.name | quote }}
+          volumeMounts:
+            - name: {{ $cfg.name }}-args
+              mountPath: /etc/llama-server-args
+              readOnly: true
+            - name: {{ $cfg.name }}-models
+              mountPath: {{ (index $cfg.model "model-dir") | quote }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          resources:
+            {{- if eq $inf.resources.gpu "1" }}
+            requests:
+              cpu: {{ $inf.resources.cpuRequest | default "1" }}
+              nvidia.com/gpu: {{ $inf.resources.gpu }}
+              memory: {{ $inf.resources.memory }}
+            limits:
+              cpu: {{ $inf.resources.cpuLimit | default "2" }}
+              nvidia.com/gpu: {{ $inf.resources.gpu }}
+              memory: {{ $inf.resources.memory }}
+            {{- else }}
+            requests:
+              cpu: {{ $inf.resources.cpuRequest | default "1" }}
+              memory: {{ $inf.resources.memory }}
+            limits:
+              cpu: {{ $inf.resources.cpuLimit | default "2" }}
+              memory: {{ $inf.resources.memory }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            failureThreshold: 180
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      volumes:
+        - name: {{ $cfg.name }}-args
+          configMap:
+            name: {{ $cfg.name }}
+        - name: {{ $cfg.name }}-models
+          hostPath:
+            path: /mnt/k8s-local-nvme/{{ $.Values.inference.pvc.name }}
+            type: DirectoryOrCreate
+{{- end }}

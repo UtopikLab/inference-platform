@@ -1,0 +1,27 @@
+name: Inference Chart CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  chart-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Build locked dependencies
+        run: helm dependency build helm/inference
+
+      - name: Lint and render inference chart
+        run: |
+          helm lint --strict helm/inference
+          helm template inference helm/inference --namespace inference
