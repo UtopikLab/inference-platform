@@ -7,7 +7,7 @@ against the pending/insufficient-GPU scheduling race). Each HPA pins maxReplicas
 gpuCount (one replica per GPU); minReplicas tracks the current replica count so a
 manual helm upgrade can't accidentally spawn extra gpu pods.
 */}}
-{{- $ns := "inference" -}}
+{{- $ns := .Release.Namespace -}}
 {{- $inf := .Values.inference -}}
 {{- $gpuCount := $inf.gpuCount | default 2 -}}
 {{- range $idx, $cfg := $inf.configMaps }}

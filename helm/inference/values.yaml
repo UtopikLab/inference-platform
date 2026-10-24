@@ -2,9 +2,6 @@
 # Inference chart values: llama.cpp inference servers.
 # ---------------------------------------------------------------------------
 
-# Namespace where this chart's resources are placed.
-namespace: "inference"
-
 namespaces:
   create: true
 
@@ -21,12 +18,8 @@ nvidia-device-plugin:
   # The chart enforces a guard against the 'default' namespace; set true so the
   # chart renders when this parent chart is templated/installed in 'default'.
   allowDefaultNamespace: true
-  # The sub-chart scopes its namespace-scoped resources (Namespace, DaemonSet,
-  # ServiceAccount) to the parent release namespace via this field. Without it,
-  # `helm template` renders them under 'default' and a live `helm install` would
-  # place them in the wrong namespace (collision with the live gpu-namespace
-  # device-plugin). Set to the live device-plugin namespace.
-  # namespaceOverride: gpu
+  # Namespace-scoped dependency resources use the release namespace. If set,
+  # namespaceOverride must match it; routine deployments disable this plugin.
   securityContext:
     privileged: true
     allowPrivilegeEscalation: true

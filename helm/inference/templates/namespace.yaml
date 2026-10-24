@@ -1,8 +1,8 @@
-{{- if and .Values.namespaces.create (not (lookup "v1" "Namespace" "" .Values.namespace)) }}
+{{- if and .Values.namespaces.create (not (lookup "v1" "Namespace" "" .Release.Namespace)) }}
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace | quote }}
+  name: {{ .Release.Namespace | quote }}
   annotations:
     helm.sh/resource-policy: keep
   labels:

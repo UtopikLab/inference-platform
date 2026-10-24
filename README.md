@@ -45,9 +45,17 @@ local PV creation is now disabled. Environment overlays own node names, physical
 paths, capacity, storage class/binding, routing and hardware topology.
 `namespaces.create` and `inference.pv.create` independently control Namespace
 and PV management. Routine deployment must set both to `false` and set
-`nvidia-device-plugin.enabled=false` in its environment overlay. Use release
-namespace `inference` with the default `namespace: inference` values; changing
-the release namespace alone does not relocate every resource.
+`nvidia-device-plugin.enabled=false` in its environment overlay. Helm's
+`--namespace` selects the namespace for every namespaced resource. There is no
+top-level `namespace` chart value. The Namespace template also uses
+`.Release.Namespace`. The locked NVIDIA dependency follows that namespace;
+an enabled dependency's `namespaceOverride` must match it.
+
+Infra keeps `namespaces.create: false`: deployment operators must preprovision
+the selected namespace separately. Routine Helm deployment does not use
+`--create-namespace`, adopt namespaces, or provision the GPU plugin. Setting
+`namespaces.create: true` is a separate bootstrap choice, not routine deployment
+permission. No namespace or context is inferred from this chart's name.
 
 The PVC is always rendered. Configured server deployments mount it, retaining
 `LLAMA_CACHE=/models/llama.cpp/<deployment-name>`. It explicitly binds
