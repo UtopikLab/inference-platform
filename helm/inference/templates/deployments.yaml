@@ -1,11 +1,11 @@
 {{/*
-Inference server Deployments (llama.cpp, one per Tesla P40).
+Inference server Deployments (llama.cpp, one per configured server).
 Faithful to inference/deployment.yaml (Deployments inference-server-gpu{0,1}).
 */}}
 # ---------------------------------------------------------------------------
-# Inference server Deployments: two GPU-bound llama.cpp pods, one per P40.
+# Inference server Deployments: GPU-bound llama.cpp pods.
 # Each pod runs the OpenAI-compatible server with the per-GPU args ConfigMap
-# mounted at /etc/llama-server-args and native download cache on shared hostPath.
+# mounted at /etc/llama-server-args and native download cache on the shared PVC.
 # ---------------------------------------------------------------------------
 {{- $ns := .Values.namespace -}}
 {{- $inf := .Values.inference -}}
@@ -39,9 +39,10 @@ spec:
         app: inference-server
         gpu: "{{ $idx }}"
     spec:
+      {{- with $inf.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml $inf.imagePullSecrets | nindent 8 }}
-      # Single-node cluster: spread one pod per GPU so both cards are used.
+      {{- end }}
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -124,7 +125,6 @@ spec:
           configMap:
             name: {{ $cfg.name }}
         - name: {{ $cfg.name }}-models
-          hostPath:
-            path: /mnt/k8s-local-nvme/{{ $.Values.inference.pvc.name }}
-            type: DirectoryOrCreate
+          persistentVolumeClaim:
+            claimName: {{ $.Values.inference.pvc.name }}
 {{- end }}

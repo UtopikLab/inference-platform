@@ -1,11 +1,14 @@
 # ---------------------------------------------------------------------------
-# Inference chart values: llama.cpp inference servers (one per Tesla P40).
+# Inference chart values: llama.cpp inference servers.
 # ---------------------------------------------------------------------------
 
 # Namespace where this chart's resources are placed.
 namespace: "inference"
 
-# Default image registry for containerd (K3s host). See inference/common.sh.
+namespaces:
+  create: true
+
+# Default image registry.
 global:
   IMAGE_REGISTRY: "ghcr.io"
 
@@ -42,9 +45,7 @@ inference:
   # Official CUDA image b11783, registry manifest verified 2026-10-21.
   image: "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:1bacc872b168d2d10bfd8c220336f5a2cd464c07605936ec146ee5198832ffce"
   imagePullPolicy: Always
-  # Shared pull secret applied to all containers.
-  imagePullSecrets:
-  - name: code-factory-ghcr-pull
+  imagePullSecrets: []
   # Per-GPU server argument ConfigMaps. One entry per GPU, numeric index used by
   # the template so they render without needing `helm install ... -f
   # inference-configmaps.yaml`.
@@ -59,42 +60,30 @@ inference:
       host: "0.0.0.0"
       keep-ctx: "0"
       no-display: "true"
-  - name: llama-server-args-gpu1
-    model:
-      model-dir: /models
-      model-format: gguf
-      ctx-size: "32768"
-      tensor-type: q4_km
-      port: "8000"
-      host: "0.0.0.0"
-      keep-ctx: "0"
-      no-display: "true"
-  # GPU device IDs pinned per pod (Tesla P40, no tensor cores).
-  gpuDeviceIds:
-    gpu0: "0"
-    gpu1: "1"
   # Replicas per deployment; fixed at one to isolate each GPU and native cache.
   gpuCount: 1
-  # Resources: full P40 (23 GiB) requested to prevent oversubscription.
+  # Resource budget per server.
   resources:
     # CPU resource budget for the llama.cpp server pods.
     cpuRequest: "1"
     cpuLimit: "2"
-    # Set to "1" to request a physical GPU per pod. The nvidia-device-plugin
-    # DaemonSet runs privileged now (privileged: true) so NVML can enumerate the
-    # Tesla P40s and the node reports nvidia.com/gpu: 2. Flip "gpu" to "1" to
-    # schedule GPU inference; keep "gpu: 0" only as a fallback for nodes where
-    # the device-plugin cannot run (no healthy devices).
     gpu: "1"
     memory: "2Gi"
-  # Ingress (Traefik, shipped by K3s).
   ingress:
-    host: inference.local
+    enabled: false
+    host: ""
     path: /v1
-    entrypoints: websecure
-    middlewares: default@kubernetes/tcp-security
-    method: ANY
-  # Native cache storage uses the existing NVMe hostPath, not a provisioned PVC.
+    annotations: {}
+    className: ""
+    tls: []
+  # Shared local PV/PVC for model weights and native cache.
+  pv:
+    create: false
+    name: ""
+    nodeName: ""
+    path: ""
   pvc:
     name: inference-models
-    mountPath: /mnt/k8s-local-nvme
+    storage: "1Gi"
+    volumeName: ""
+    storageClassName: null

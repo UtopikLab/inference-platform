@@ -1,0 +1,31 @@
+{{- if .Values.inference.pv.create }}
+{{- $pvc := .Values.inference.pvc }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.inference.pv.name | default $pvc.name }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app: {{ .Chart.Name }}
+    component: {{ .Release.Name }}
+    app.kubernetes.io/component: inference-models
+    app.k8s.io/managed-by: Helm
+spec:
+  capacity:
+    storage: {{ $pvc.storage | quote }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ $pvc.storageClassName | default "" | quote }}
+  persistentVolumeReclaimPolicy: Retain
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchFields:
+            - key: metadata.name
+              operator: In
+              values: [{{ required "inference.pv.nodeName is required when creating a local PV" .Values.inference.pv.nodeName | quote }}]
+  local:
+    path: {{ required "inference.pv.path is required when creating a local PV" .Values.inference.pv.path | quote }}
+{{- end }}
