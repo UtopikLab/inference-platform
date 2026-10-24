@@ -7,7 +7,7 @@ Faithful to inference/deployment.yaml (Deployments inference-server-gpu{0,1}).
 # Each pod runs the OpenAI-compatible server with the per-GPU args ConfigMap
 # mounted at /etc/llama-server-args and native download cache on the shared PVC.
 # ---------------------------------------------------------------------------
-{{- $ns := .Values.namespace -}}
+{{- $ns := .Release.Namespace -}}
 {{- $inf := .Values.inference -}}
 {{- range $idx, $cfg := $inf.configMaps }}
 ---

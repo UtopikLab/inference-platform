@@ -4,7 +4,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Chart.Name }}-inference-ingress
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   {{- with $ingress.annotations }}
   annotations: {{ toYaml . | nindent 4 }}
   {{- end }}

@@ -10,6 +10,12 @@ WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
 
 class ChartTests(unittest.TestCase):
+    def test_namespace_is_not_a_chart_value(self):
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        schema = yaml.safe_load((CHART / "values.schema.json").read_text())
+        self.assertNotIn("namespace", values)
+        self.assertNotIn("namespace", schema["properties"])
+
     def test_chart_publication_uses_release_tag_and_commit_addressed_versions(self):
         workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(workflow["on"]["push"]["tags"], ["v*", "[0-9]*"])
@@ -36,11 +42,11 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(chart["version"], "0.0.0")
         self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
 
-    def render(self, namespace=True, pv=False, extra=()):
+    def render(self, namespace=True, pv=False, extra=(), release_namespace="inference"):
         result = subprocess.run(
             [
                 "helm", "template", "inference", str(CHART),
-                "--namespace", "inference",
+                "--namespace", release_namespace,
                 "--set", "nvidia-device-plugin.enabled=false",
                 "--set", f"namespaces.create={str(namespace).lower()}",
                 "--set", f"inference.pv.create={str(pv).lower()}",
@@ -49,6 +55,34 @@ class ChartTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         )
         return [resource for resource in yaml.safe_load_all(result.stdout) if resource]
+
+    def test_namespace_resource_uses_release_namespace(self):
+        resources = self.render(release_namespace="tenant-models", extra=(
+            "--set", "inference.ingress.enabled=true",
+            "--set", "inference.ingress.host=models.example.test",
+        ))
+        namespace = next(resource for resource in resources if resource["kind"] == "Namespace")
+        self.assertEqual(namespace["metadata"]["name"], "tenant-models")
+        for resource in resources:
+            if resource["kind"] != "Namespace":
+                self.assertEqual(resource["metadata"]["namespace"], "tenant-models")
+
+    def test_device_plugin_uses_release_namespace_and_rejects_conflicting_override(self):
+        resources = self.render(release_namespace="tenant-models", extra=(
+            "--set", "nvidia-device-plugin.enabled=true",
+        ))
+        for resource in resources:
+            if "namespace" in resource["metadata"]:
+                self.assertEqual(resource["metadata"]["namespace"], "tenant-models")
+            for subject in resource.get("subjects", []):
+                if subject["kind"] == "ServiceAccount":
+                    self.assertEqual(subject["namespace"], "tenant-models")
+        with self.assertRaises(subprocess.CalledProcessError) as error:
+            self.render(release_namespace="tenant-models", extra=(
+                "--set", "nvidia-device-plugin.enabled=true",
+                "--set", "nvidia-device-plugin.namespaceOverride=other-models",
+            ))
+        self.assertIn("must match the release namespace", error.exception.stderr)
 
     def test_namespace_and_pv_switches_are_independent(self):
         values = yaml.safe_load((CHART / "values.yaml").read_text())
@@ -97,12 +131,11 @@ class ChartTests(unittest.TestCase):
 
     def test_ingress_uses_alternative_environment_values(self):
         resources = self.render(extra=(
-            "--set", "namespace=alternate-inference",
             "--set", "inference.ingress.enabled=true",
             "--set", "inference.ingress.host=models.example.test",
             "--set", "inference.ingress.path=/api",
             "--set", "inference.ingress.className=example-controller",
-        ))
+        ), release_namespace="alternate-inference")
         ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
         self.assertEqual(ingress["metadata"]["namespace"], "alternate-inference")
         self.assertNotIn("annotations", ingress["metadata"])
