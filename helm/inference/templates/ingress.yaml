@@ -1,35 +1,34 @@
-{{/*
-Ingress for the inference namespace (Traefik, shipped by K3s).
-Faithful to inference/deployment.yaml (Ingress inference-ingress).
-*/}}
+{{- $ingress := .Values.inference.ingress }}
+{{- if $ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Chart.Name }}-inference-ingress
-  namespace: inference
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.middlewares: default@kubernetes/tcp-security
-    traefik.ingress.kubernetes.io/rule.match: Host:`inference.local` && PathPrefix(`/v1`)
-    traefik.ingress.kubernetes.io/service.method: ANY
+  namespace: {{ .Values.namespace }}
+  {{- with $ingress.annotations }}
+  annotations: {{ toYaml . | nindent 4 }}
+  {{- end }}
   labels:
     app: {{ .Chart.Name }}
     component: {{ .Release.Name }}
     app.kubernetes.io/component: inference-server
     app.k8s.io/managed-by: Helm
 spec:
-  tls:
-    - hosts:
-        - inference.local
-      # secretName: inference-tls-cert # Optional: Add this line if you have a specific SSL certificate secret
+  {{- with $ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  {{- with $ingress.tls }}
+  tls: {{ toYaml . | nindent 4 }}
+  {{- end }}
   rules:
-    - host: inference.local
+    - host: {{ required "inference.ingress.host is required when ingress is enabled" $ingress.host | quote }}
       http:
         paths:
-          - path: /v1
+          - path: {{ $ingress.path | quote }}
             pathType: Prefix
             backend:
               service:
                 name: inference-server
                 port:
                   number: 8000
+{{- end }}

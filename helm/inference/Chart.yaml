@@ -2,9 +2,9 @@
 apiVersion: v2
 name: inference
 description: >
-  llama.cpp inference servers (one per Tesla P40), the OpenAI-compatible llama.cpp server with the per-GPU args ConfigMap mounted at /etc/llama-server-args and model weights from the shared PVC.
+  llama.cpp inference servers with configurable GPU topology, per-server argument ConfigMaps and model weights from a shared PVC.
 type: application
-version: "0.1.0"
+version: "0.2.0"
 appVersion: "0.1.0"
 annotations:
   license: MIT
