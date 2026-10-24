@@ -1,0 +1,2 @@
+__pycache__/
+/helm/inference/charts/*.tgz

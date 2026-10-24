@@ -6,9 +6,36 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/inference"
+WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
 
 class ChartTests(unittest.TestCase):
+    def test_chart_publication_uses_release_tag_and_commit_addressed_versions(self):
+        workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(workflow["on"]["push"]["tags"], ["v*", "[0-9]*"])
+        publish_job = workflow["jobs"]["publish-chart"]
+        self.assertIn("refs/tags/", publish_job["if"])
+        self.assertIn("refs/heads/main", publish_job["if"])
+        self.assertIn("Install chart metadata tool", [
+            step.get("name") for step in publish_job["steps"]
+        ])
+        version_step = next(
+            step for step in publish_job["steps"] if step.get("id") == "chart-version")
+        self.assertIn('${GITHUB_REF_NAME#v}', version_step["run"])
+        self.assertIn("GITHUB_RUN_NUMBER", version_step["run"])
+        self.assertIn("GITHUB_RUN_ATTEMPT", version_step["run"])
+        self.assertIn("0.0.0-sha.${GITHUB_SHA}", version_step["run"])
+        self.assertIn("MAJOR.MINOR.PATCH", version_step["run"])
+        package_step = next(
+            step for step in publish_job["steps"]
+            if step.get("name") == "Package and publish versioned inference charts")
+        self.assertIn("org.opencontainers.image.revision", package_step["run"])
+        self.assertIn("Refusing to overwrite existing released chart version", package_step["run"])
+        self.assertIn('helm package "$chart_source" --version "$version"', package_step["run"])
+        chart = yaml.safe_load((CHART / "Chart.yaml").read_text())
+        self.assertEqual(chart["version"], "0.0.0")
+        self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
+
     def render(self, namespace=True, pv=False, extra=()):
         result = subprocess.run(
             [
