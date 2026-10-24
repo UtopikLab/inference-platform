@@ -17,14 +17,26 @@ The optional chart-publish job pushes `inference` to
 `ghcr.io/utopiklab/inference-platform/inference`. It runs after chart validation
 on pushes to `main` or a `workflow_dispatch` run on `main`, and only when the
 repository Actions variable `HELM_CHART_PUBLISH_ENABLED` is exactly `true`.
-Pull requests remain validation-only. Chart versions follow SemVer in
-`helm/inference/Chart.yaml`; the next version is `0.2.0` (not yet published or
-digest-verified). The runtime image pin is unchanged.
+Pushes of `vX.Y.Z` or `X.Y.Z` release tags publish using the tag's SemVer as
+the chart version (the optional leading `v` is removed). Main-branch pushes
+and manual runs publish with a unique `0.0.0-main.<run>.<attempt>` version.
+Each publication also creates `0.0.0-sha.<full-commit>` for exact source
+resolution. The chart carries that source commit in its OCI revision
+annotation. Existing release versions are never replaced; an existing source
+version is reused only when its annotation matches, otherwise publication
+fails. Infra resolves the chart by the exact version derived from the selected
+Git ref and fails if it is absent; it never falls back to a mutable `main` or
+`latest` alias.
+The checked-in `helm/inference/Chart.yaml` version is only a valid placeholder;
+the workflow supplies the package version. Pull requests remain
+validation-only. The runtime image pin is unchanged.
 
 The workflow does not set package visibility. GitHub's read-only package
 metadata does not expose UtopikLab's package-creation visibility default, so
 assume a newly created package may be private. Verify the desired visibility
 for the UtopikLab-owned package in GitHub before enabling the publish variable.
+The infra resolution workflow also needs read access to this package; a private
+package requires separately configured access there.
 
 ## Storage and Ownership in 0.2.0
 
@@ -87,9 +99,9 @@ are no longer supplied by the chart. Legacy `entrypoints`, `middlewares`, and
 The k8s-node01 overlay in infra preserves the prior two-server/cache layout,
 static storage binding, pull-secret reference and routing settings.
 
-Before rollout, publish `0.2.0` through the existing gated publication process,
-verify the resulting OCI digest/version and exact render with the infra overlay,
-and commit that verified immutable pin in infra. Never substitute the old
+Before rollout, publish from the chosen release tag through the existing gated
+publication process, verify the resulting OCI digest/version and exact render
+with the infra overlay, and commit that verified immutable pin in infra. Never substitute the old
 `0.1.0` digest or deploy this source directory from infra. GPU plugin, ingress
 controller/TLS, model storage, image-pull authentication, and dedicated runner
 authorization must be independently verified. No publication or provisioning

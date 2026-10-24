@@ -3,6 +3,7 @@ name: Inference Chart CI
 on:
   push:
     branches: [main]
+    tags: ["v*", "[0-9]*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -44,7 +45,7 @@ jobs:
           python -m unittest discover -s tests -v
 
   publish-chart:
-    if: ${{ vars.HELM_CHART_PUBLISH_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ vars.HELM_CHART_PUBLISH_ENABLED == 'true' && ((github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) || startsWith(github.ref, 'refs/tags/')) }}
     needs: chart-validation
     runs-on: ubuntu-latest
     permissions:
@@ -62,14 +63,97 @@ jobs:
       - name: Build locked dependencies
         run: helm dependency build helm/inference
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install chart metadata tool
+        run: python -m pip install "PyYAML>=6,<7"
+
       - name: Log in to GitHub Container Registry
         env:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_USERNAME" --password-stdin
 
-      - name: Package and publish inference chart
+      - name: Select chart version
+        id: chart-version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          mkdir -p "$RUNNER_TEMP/chart-package"
-          helm package helm/inference --destination "$RUNNER_TEMP/chart-package"
-          helm push "$RUNNER_TEMP/chart-package"/inference-*.tgz oci://ghcr.io/utopiklab/inference-platform
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            chart_version="${GITHUB_REF_NAME#v}"
+            if [[ ! "$chart_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Release tag must be vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH" >&2
+              exit 1
+            fi
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            chart_version="0.0.0-main.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          else
+            echo "Unsupported chart publication ref: $GITHUB_REF" >&2
+            exit 1
+          fi
+          echo "version=$chart_version" >> "$GITHUB_OUTPUT"
+          echo "source_version=0.0.0-sha.${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Package and publish versioned inference charts
+        env:
+          CHART_VERSION: ${{ steps.chart-version.outputs.version }}
+          SOURCE_CHART_VERSION: ${{ steps.chart-version.outputs.source_version }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          chart_source="$RUNNER_TEMP/chart-source"
+          package_dir="$RUNNER_TEMP/chart-package"
+          mkdir -p "$package_dir"
+          cp -a helm/inference "$chart_source"
+          python - "$chart_source/Chart.yaml" "$SOURCE_COMMIT" <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+
+          chart_path = Path(sys.argv[1])
+          chart = yaml.safe_load(chart_path.read_text(encoding="utf-8"))
+          chart.setdefault("annotations", {})["org.opencontainers.image.revision"] = sys.argv[2]
+          chart_path.write_text(yaml.safe_dump(chart, sort_keys=False), encoding="utf-8")
+          PY
+
+          chart_ref=oci://ghcr.io/utopiklab/inference-platform/inference
+          publish_chart() {
+            local version="$1"
+            local kind="$2"
+            local existing_dir="$RUNNER_TEMP/existing-$version"
+            local pull_log="$RUNNER_TEMP/pull-$version.log"
+            mkdir -p "$existing_dir"
+            if helm pull "$chart_ref" --version "$version" --destination "$existing_dir" >"$pull_log" 2>&1; then
+              if [[ "$kind" == release ]]; then
+                echo "Refusing to overwrite existing released chart version $version" >&2
+                exit 1
+              fi
+              existing_chart="$existing_dir/inference-$version.tgz"
+              existing_commit="$(helm show chart "$existing_chart" | python -c 'import sys,yaml; print(yaml.safe_load(sys.stdin).get("annotations", {}).get("org.opencontainers.image.revision", ""))')"
+              if [[ "$existing_commit" != "$SOURCE_COMMIT" ]]; then
+                echo "Existing source chart $version does not map to $SOURCE_COMMIT" >&2
+                exit 1
+              fi
+              echo "Source chart $version already maps to $SOURCE_COMMIT; keeping it unchanged"
+              return
+            fi
+            if ! grep -Eqi 'not found|manifest unknown|404' "$pull_log"; then
+              cat "$pull_log" >&2
+              echo "Could not safely determine whether chart version $version already exists" >&2
+              exit 1
+            fi
+            helm package "$chart_source" --version "$version" --destination "$package_dir"
+            helm push "$package_dir/inference-$version.tgz" oci://ghcr.io/utopiklab/inference-platform
+          }
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            publish_chart "$CHART_VERSION" release
+          else
+            publish_chart "$CHART_VERSION" build
+          fi
+          publish_chart "$SOURCE_CHART_VERSION" source

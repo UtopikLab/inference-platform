@@ -4,10 +4,11 @@ name: inference
 description: >
   llama.cpp inference servers with configurable GPU topology, per-server argument ConfigMaps and model weights from a shared PVC.
 type: application
-version: "0.2.0"
+version: "0.0.0"
 appVersion: "0.1.0"
 annotations:
   license: MIT
+  org.opencontainers.image.revision: ""
 keywords:
 - inference
 - k8s
