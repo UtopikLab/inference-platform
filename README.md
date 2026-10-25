@@ -44,18 +44,22 @@ Defaults preserve Namespace creation and the enabled NVIDIA dependency, but
 local PV creation is now disabled. Environment overlays own node names, physical
 paths, capacity, storage class/binding, routing and hardware topology.
 `namespaces.create` and `inference.pv.create` independently control Namespace
-and PV management. Routine deployment must set both to `false` and set
-`nvidia-device-plugin.enabled=false` in its environment overlay. Helm's
+and PV management. Routine deployment sets both to `false`; the NVIDIA
+device-plugin remains enabled by default. Helm's
 `--namespace` selects the namespace for every namespaced resource. There is no
 top-level `namespace` chart value. The Namespace template also uses
 `.Release.Namespace`. The locked NVIDIA dependency follows that namespace;
-an enabled dependency's `namespaceOverride` must match it.
+its namespace-local resources use that namespace and `namespaceOverride`, when
+set, must match it. The dependency also renders cluster-scoped RBAC and
+privileged DaemonSets, so deployment requires the corresponding cluster
+permissions and NVIDIA driver/runtime support on GPU nodes.
 
 Infra keeps `namespaces.create: false`: deployment operators must preprovision
 the selected namespace separately. Routine Helm deployment does not use
-`--create-namespace`, adopt namespaces, or provision the GPU plugin. Setting
-`namespaces.create: true` is a separate bootstrap choice, not routine deployment
-permission. No namespace or context is inferred from this chart's name.
+`--create-namespace` or adopt namespaces; it does install the enabled GPU
+plugin. Setting `namespaces.create: true` is a separate bootstrap choice, not
+routine deployment permission. No namespace or context is inferred from this
+chart's name.
 
 The PVC is always rendered. Configured server profiles mount it, retaining
 `LLAMA_CACHE=/models/llama.cpp/<profile-name>`. It explicitly binds
@@ -89,8 +93,10 @@ This prints YAML only. Do not apply it over an existing PV or install a second
 Helm release to take ownership. Verify the existing Namespace and retained PV
 against the environment's recorded name, capacity, path, node affinity,
 access mode/class, and intended claim binding.
-The routine render omits Namespace/PV and contains no cluster RBAC, CRD,
-DaemonSet, or hostPath. A local PV's node affinity places its claim consumers.
+The routine render omits Namespace/PV and includes the pinned plugin's
+ClusterRole, ClusterRoleBinding, and DaemonSets, which require cluster-scoped
+permissions and hostPath access. It does not render a CRD. A local PV's node
+affinity places its claim consumers.
 Preserve the model directory and per-GPU cache; do not resize, delete, recreate,
 or adopt the live PV as part of rollout. Switching off ownership in an existing
 Helm release that previously managed cluster resources requires separate
