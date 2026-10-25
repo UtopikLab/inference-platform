@@ -176,3 +176,49 @@ jobs:
             publish_chart "$CHART_VERSION" build
           fi
           publish_chart "$SOURCE_CHART_VERSION" source
+
+          source_chart_dir="$RUNNER_TEMP/source-chart"
+          mkdir -p "$source_chart_dir"
+          pull_output="$(helm pull "$chart_ref" --version "$SOURCE_CHART_VERSION" --destination "$source_chart_dir")"
+          chart_digest="$(sed -n 's/^Digest: //p' <<< "$pull_output")"
+          if [[ ! "$chart_digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Could not determine exact published source chart digest" >&2
+            exit 1
+          fi
+          source_package="$source_chart_dir/inference-$SOURCE_CHART_VERSION.tgz"
+          source_revision="$(helm show chart "$source_package" | python -c 'import sys,yaml; print(yaml.safe_load(sys.stdin).get("annotations", {}).get("org.opencontainers.image.revision", ""))')"
+          if [[ "$source_revision" != "$SOURCE_COMMIT" ]]; then
+            echo "Published source chart does not match the requested source commit" >&2
+            exit 1
+          fi
+          python - "$source_package" "$SOURCE_COMMIT" "$SOURCE_CHART_VERSION" "$chart_digest" "$RUNNER_TEMP/inference-release-manifest.json" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+          import yaml
+
+          package, commit, version, digest, output = sys.argv[1:]
+          image = yaml.safe_load(__import__("subprocess").run(
+              ["helm", "show", "values", package], check=True, capture_output=True, text=True,
+          ).stdout)["inference"]["image"]
+          match = re.fullmatch(r"(ghcr\.io/ggml-org/llama\.cpp)(?::[^@]+)?@(sha256:[a-f0-9]{64})", image)
+          if not match or not re.fullmatch(r"[0-9a-f]{40}", commit):
+              raise SystemExit("Published chart must identify the approved digest-pinned inference image")
+          manifest = {
+              "product": "inference-platform",
+              "sourceCommit": commit,
+              "chart": "oci://ghcr.io/utopiklab/inference-platform/inference",
+              "chartVersion": version,
+              "chartDigest": digest,
+              "images": {"inference": f"{match.group(1)}@{match.group(2)}"},
+          }
+          Path(output).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inference-platform-release-${{ github.sha }}
+          path: ${{ runner.temp }}/inference-release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
