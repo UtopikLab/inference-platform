@@ -134,14 +134,17 @@ jobs:
                 echo "Refusing to overwrite existing released chart version $version" >&2
                 exit 1
               fi
-              existing_chart="$existing_dir/inference-$version.tgz"
-              existing_commit="$(helm show chart "$existing_chart" | python -c 'import sys,yaml; print(yaml.safe_load(sys.stdin).get("annotations", {}).get("org.opencontainers.image.revision", ""))')"
-              if [[ "$existing_commit" != "$SOURCE_COMMIT" ]]; then
-                echo "Existing source chart $version does not map to $SOURCE_COMMIT" >&2
-                exit 1
+              if [[ "$kind" == source ]]; then
+                existing_chart="$existing_dir/inference-$version.tgz"
+                existing_commit="$(helm show chart "$existing_chart" | python -c 'import sys,yaml; print(yaml.safe_load(sys.stdin).get("annotations", {}).get("org.opencontainers.image.revision", ""))')"
+                if [[ "$existing_commit" != "$SOURCE_COMMIT" ]]; then
+                  echo "Existing source chart $version does not map to $SOURCE_COMMIT" >&2
+                  exit 1
+                fi
+                echo "Source chart $version already maps to $SOURCE_COMMIT; keeping it unchanged"
+                return
               fi
-              echo "Source chart $version already maps to $SOURCE_COMMIT; keeping it unchanged"
-              return
+              echo "Refreshing mutable chart version $version"
             fi
             if ! grep -Eqi 'not found|manifest unknown|404' "$pull_log"; then
               cat "$pull_log" >&2

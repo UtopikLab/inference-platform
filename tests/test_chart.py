@@ -29,8 +29,8 @@ class ChartTests(unittest.TestCase):
         version_step = next(
             step for step in publish_job["steps"] if step.get("id") == "chart-version")
         self.assertIn('${GITHUB_REF_NAME#v}', version_step["run"])
-        self.assertIn("GITHUB_RUN_NUMBER", version_step["run"])
-        self.assertIn("GITHUB_RUN_ATTEMPT", version_step["run"])
+        self.assertEqual(version_step["env"]["GITHUB_RUN_NUMBER"], "${{ github.run_number }}")
+        self.assertEqual(version_step["env"]["GITHUB_RUN_ATTEMPT"], "${{ github.run_attempt }}")
         self.assertIn("0.0.0-sha.${GITHUB_SHA}", version_step["run"])
         self.assertIn("MAJOR.MINOR.PATCH", version_step["run"])
         package_step = next(
@@ -38,6 +38,8 @@ class ChartTests(unittest.TestCase):
             if step.get("name") == "Package and publish versioned inference charts")
         self.assertIn("org.opencontainers.image.revision", package_step["run"])
         self.assertIn("Refusing to overwrite existing released chart version", package_step["run"])
+        self.assertIn('if [[ "$kind" == source ]]', package_step["run"])
+        self.assertIn("Refreshing mutable chart version $version", package_step["run"])
         self.assertIn('helm package "$chart_source" --version "$version"', package_step["run"])
         chart = yaml.safe_load((CHART / "Chart.yaml").read_text())
         self.assertEqual(chart["version"], "0.0.0")
