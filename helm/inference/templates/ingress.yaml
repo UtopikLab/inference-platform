@@ -1,11 +1,57 @@
 {{- $ingress := .Values.inference.ingress }}
 {{- if $ingress.enabled }}
+{{- if not $ingress.routes }}
+{{- fail "inference.ingress.routes must contain at least one route when ingress is enabled" -}}
+{{- end }}
+{{- $servers := dict -}}
+{{- range .Values.inference.servers }}
+{{- $_ := set $servers .name . -}}
+{{- end }}
+{{- $rules := dict -}}
+{{- range $route := $ingress.routes }}
+{{- if not (hasKey $servers $route.profile) }}
+{{- fail (printf "inference.ingress route profile %q does not match an inference.servers name" $route.profile) -}}
+{{- end }}
+{{- $path := dict "path" $route.path "pathType" ($route.pathType | default "Prefix") "profile" $route.profile -}}
+{{- if hasKey $rules $route.host }}
+{{- $_ := set $rules $route.host (append (index $rules $route.host) $path) -}}
+{{- else }}
+{{- $_ := set $rules $route.host (list $path) -}}
+{{- end }}
+{{- end }}
+{{- range $tls := $ingress.tls }}
+{{- range $host := $tls.hosts }}
+{{- if not (hasKey $rules $host) }}
+{{- fail (printf "inference.ingress.tls host %q must match an inference.ingress.routes host" $host) -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $ingressRules := list -}}
+{{- range $host := (keys $rules | sortAlpha) }}
+{{- $paths := list -}}
+{{- range $path := index $rules $host }}
+{{- $server := index $servers $path.profile -}}
+{{- $backend := dict "service" (dict "name" $path.profile "port" (dict "number" $server.service.port)) -}}
+{{- $paths = append $paths (dict "path" $path.path "pathType" $path.pathType "backend" $backend) -}}
+{{- end }}
+{{- $ingressRules = append $ingressRules (dict "host" $host "http" (dict "paths" $paths)) -}}
+{{- end }}
+{{- $annotations := deepCopy ($ingress.annotations | default dict) -}}
+{{- with $ingress.certManager }}
+{{- if .enabled }}
+{{- $issuerAnnotation := "cert-manager.io/cluster-issuer" -}}
+{{- if eq (default "ClusterIssuer" .issuerKind) "Issuer" }}
+{{- $issuerAnnotation = "cert-manager.io/issuer" -}}
+{{- end }}
+{{- $_ := set $annotations $issuerAnnotation (required "inference.ingress.certManager.issuerName is required" .issuerName) -}}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Chart.Name }}-inference-ingress
   namespace: {{ .Release.Namespace }}
-  {{- with $ingress.annotations }}
+  {{- with $annotations }}
   annotations: {{ toYaml . | nindent 4 }}
   {{- end }}
   labels:
@@ -20,15 +66,5 @@ spec:
   {{- with $ingress.tls }}
   tls: {{ toYaml . | nindent 4 }}
   {{- end }}
-  rules:
-    - host: {{ required "inference.ingress.host is required when ingress is enabled" $ingress.host | quote }}
-      http:
-        paths:
-          - path: {{ $ingress.path | quote }}
-            pathType: Prefix
-            backend:
-              service:
-                name: inference-server
-                port:
-                  number: 8000
+  rules: {{ toYaml $ingressRules | nindent 4 }}
 {{- end }}

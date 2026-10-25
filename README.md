@@ -57,8 +57,8 @@ the selected namespace separately. Routine Helm deployment does not use
 `namespaces.create: true` is a separate bootstrap choice, not routine deployment
 permission. No namespace or context is inferred from this chart's name.
 
-The PVC is always rendered. Configured server deployments mount it, retaining
-`LLAMA_CACHE=/models/llama.cpp/<deployment-name>`. It explicitly binds
+The PVC is always rendered. Configured server profiles mount it, retaining
+`LLAMA_CACHE=/models/llama.cpp/<profile-name>`. It explicitly binds
 `inference.pvc.volumeName` when supplied; otherwise it binds the chart-created
 PV if enabled, or allows provisioning by the cluster. `inference.pvc.name`
 defaults to `inference-models`. The generic request is now `1Gi`, not `500Gi`;
@@ -97,15 +97,46 @@ Helm release that previously managed cluster resources requires separate
 operator review of stored release manifests; new keep annotations do not
 retroactively protect older revisions from deletion.
 
-The default now contains one server profile rather than assuming two GPUs, and
-no image-pull Secret reference. Set `inference.configMaps` and
-`inference.imagePullSecrets` in infra. Ingress is now disabled by default;
-enable `inference.ingress.enabled` with an explicit `host`, optional `className`,
-`annotations`, and `tls`. The previously hardcoded Traefik annotations and host
-are no longer supplied by the chart. Legacy `entrypoints`, `middlewares`, and
-`method` values must move into `annotations`; these were previously ignored.
-The k8s-node01 overlay in infra preserves the prior two-server/cache layout,
-static storage binding, pull-secret reference and routing settings.
+The default contains `coder` (two replicas) and `judge` (one replica), each with
+its own Deployment, fixed-size HPA, and ClusterIP Service. `inference.servers`
+accepts a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
+`resources.requests`/`resources.limits`, and `service.port`. The model and server
+argument arrays are passed to `llama-server` as individual arguments. The chart
+adds `--host 0.0.0.0` and `--port` from `service.port`; do not add `--host` or
+`--port` in either argument array. Probes and the Service target the named HTTP
+container port, so the configured port stays coherent end to end. Profiles
+share the configured model PVC but retain separate native-download caches.
+`inference.imagePullSecrets` remains optional.
+
+Resource maps use Kubernetes resource names. The chart defaults request CPU and
+memory only; add a GPU key to both requests and limits only after confirming the
+resource name and quantity advertised by the target cluster. `nvidia.com/gpu`
+requests a generic NVIDIA GPU and cannot select a physical GPU model. Selecting
+different GPU models on one node requires cluster-advertised distinct resource
+names or custom device-plugin/device support; profile labels alone do not pin a
+physical device.
+
+Ingress remains disabled by default. To enable it, configure `routes` entries
+with `host`, `path`, and `profile` (the matching `inference.servers[].name`),
+plus optional `pathType`, `className`, and annotations. Routes with the same
+host are grouped into one rule and target the selected profile Service. Each
+TLS host must match a route host. For a pre-provisioned certificate, the Secret
+must exist in the release namespace. To request cert-manager issuance, set
+`inference.ingress.certManager.enabled` and provide the existing issuer's
+`issuerName`; `issuerKind` selects `Issuer` or `ClusterIssuer` (default). The
+chart adds the appropriate issuer annotation but does not install cert-manager
+or create the issuer. Operators must provide a working issuer, solver, ingress
+controller, DNS, and any required external reachability before rollout. Do not
+put issuer credentials in chart values. The chart does not assume public
+exposure or authentication. Legacy `entrypoints`, `middlewares`, and `method`
+values were ignored and are not supported.
+
+The infra Dev overlay configures the two profile workloads, the existing
+`inference-dev` namespace, and Code Factory's internal Service endpoints. It
+does not set a GPU resource class or enable Ingress. These source changes do not
+change chart publication/versioning or the reviewed artifact lock; publishing a
+new chart and updating the infra artifact lock remain separate gated follow-up
+work.
 
 Before rollout, publish from the chosen release tag through the existing gated
 publication process, verify the resulting OCI digest/version and exact render

@@ -10,7 +10,7 @@ global:
   IMAGE_REGISTRY: "ghcr.io"
 
 # ---------------------------------------------------------------------------
-# Inference servers (namespace: inference). llama.cpp image VERIFIED real.
+# Inference servers (namespace selected by Helm release).
 # ---------------------------------------------------------------------------
 # The NVIDIA device-plugin chart is a sub-chart, gated by this flag.
 nvidia-device-plugin:
@@ -39,36 +39,55 @@ inference:
   image: "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:1bacc872b168d2d10bfd8c220336f5a2cd464c07605936ec146ee5198832ffce"
   imagePullPolicy: Always
   imagePullSecrets: []
-  # Per-GPU server argument ConfigMaps. One entry per GPU, numeric index used by
-  # the template so they render without needing `helm install ... -f
-  # inference-configmaps.yaml`.
-  configMaps:
-  - name: llama-server-args-gpu0
-    model:
-      model-dir: /models
-      model-format: gguf
-      ctx-size: "32768"
-      tensor-type: q4_km
-      port: "8000"
-      host: "0.0.0.0"
-      keep-ctx: "0"
-      no-display: "true"
-  # Replicas per deployment; fixed at one to isolate each GPU and native cache.
-  gpuCount: 1
-  # Resource budget per server.
-  resources:
-    # CPU resource budget for the llama.cpp server pods.
-    cpuRequest: "1"
-    cpuLimit: "2"
-    gpu: "1"
-    memory: "2Gi"
+  # Resource keys are Kubernetes resource names advertised by the target
+  # cluster. GPU resource names are intentionally not assumed here.
+  servers:
+  - name: coder
+    replicas: 2
+    modelDir: /models
+    modelArgs: []
+    serverArgs:
+    - --models-max
+    - "1"
+    - --ctx-size
+    - "32768"
+    service:
+      port: 8000
+    resources:
+      requests:
+        cpu: "1"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+  - name: judge
+    replicas: 1
+    modelDir: /models
+    modelArgs: []
+    serverArgs:
+    - --models-max
+    - "1"
+    - --ctx-size
+    - "32768"
+    service:
+      port: 8000
+    resources:
+      requests:
+        cpu: "1"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
   ingress:
     enabled: false
-    host: ""
-    path: /v1
+    routes: []
     annotations: {}
     className: ""
     tls: []
+    certManager:
+      enabled: false
+      issuerName: ""
+      issuerKind: ClusterIssuer
   # Shared local PV/PVC for model weights and native cache.
   pv:
     create: false

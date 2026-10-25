@@ -21,6 +21,269 @@
                     "pattern": "^[-._A-Za-z0-9]+$"
                 }
             }
+        },
+        "resourceList": {
+            "type": "object",
+            "patternProperties": {
+                "^[A-Za-z0-9][A-Za-z0-9.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$": {
+                    "type": [
+                        "string",
+                        "integer",
+                        "number"
+                    ]
+                }
+            },
+            "additionalProperties": false
+        },
+        "inferenceResources": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "requests": {
+                    "$ref": "#/definitions/resourceList"
+                },
+                "limits": {
+                    "$ref": "#/definitions/resourceList"
+                }
+            }
+        },
+        "inferenceServer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "name",
+                "replicas",
+                "service"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                },
+                "replicas": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "modelDir": {
+                    "type": "string",
+                    "pattern": "^/[^.]*[^/]$"
+                },
+                "modelArgs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "serverArgs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "resources": {
+                    "$ref": "#/definitions/inferenceResources"
+                },
+                "service": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "port"
+                    ],
+                    "properties": {
+                        "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                        }
+                    }
+                }
+            }
+        },
+        "ingressRoute": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "host",
+                "path",
+                "profile"
+            ],
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "pattern": "^[A-Za-z0-9*]([A-Za-z0-9*.-]*[A-Za-z0-9*])?$"
+                },
+                "path": {
+                    "type": "string",
+                    "pattern": "^/"
+                },
+                "pathType": {
+                    "type": "string",
+                    "enum": [
+                        "Exact",
+                        "Prefix",
+                        "ImplementationSpecific"
+                    ]
+                },
+                "profile": {
+                    "type": "string",
+                    "maxLength": 63,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                }
+            }
+        },
+        "inferenceTls": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "hosts",
+                "secretName"
+            ],
+            "properties": {
+                "hosts": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 253
+                    }
+                },
+                "secretName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253,
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                }
+            }
+        },
+        "inferenceIngress": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "routes": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/ingressRoute"
+                    }
+                },
+                "className": {
+                    "type": "string"
+                },
+                "annotations": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "tls": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/inferenceTls"
+                    }
+                },
+                "certManager": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        },
+                        "issuerName": {
+                            "type": "string",
+                            "maxLength": 253
+                        },
+                        "issuerKind": {
+                            "type": "string",
+                            "enum": [
+                                "Issuer",
+                                "ClusterIssuer"
+                            ]
+                        }
+                    },
+                    "if": {
+                        "properties": {
+                            "enabled": {
+                                "const": true
+                            }
+                        },
+                        "required": [
+                            "enabled"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "issuerName"
+                        ],
+                        "properties": {
+                            "issuerName": {
+                                "minLength": 1
+                            }
+                        }
+                    }
+                }
+            },
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "enabled": {
+                                "const": true
+                            }
+                        },
+                        "required": [
+                            "enabled"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "routes"
+                        ],
+                        "properties": {
+                            "routes": {
+                                "minItems": 1
+                            }
+                        }
+                    }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "certManager": {
+                                "properties": {
+                                    "enabled": {
+                                        "const": true
+                                    }
+                                },
+                                "required": [
+                                    "enabled"
+                                ]
+                            }
+                        },
+                        "required": [
+                            "certManager"
+                        ]
+                    },
+                    "then": {
+                        "required": [
+                            "tls"
+                        ],
+                        "properties": {
+                            "tls": {
+                                "minItems": 1
+                            }
+                        }
+                    }
+                }
+            ]
         }
     },
     "title": "inference values",
@@ -176,91 +439,25 @@
                         }
                     }
                 },
-                "ingress": {
-                    "type": "object",
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean"
-                        },
-                        "host": {
-                            "type": "string"
-                        },
-                        "path": {
-                            "type": "string",
-                            "pattern": "^/"
-                        },
-                        "className": {
-                            "type": "string"
-                        },
-                        "annotations": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        },
-                        "tls": {
-                            "type": "array",
-                            "items": {
-                                "type": "object"
-                            }
-                        }
-                    },
-                    "if": {
-                        "properties": {
-                            "enabled": {
-                                "const": true
-                            }
-                        },
-                        "required": [
-                            "enabled"
-                        ]
-                    },
-                    "then": {
-                        "required": [
-                            "host"
-                        ],
-                        "properties": {
-                            "host": {
-                                "minLength": 1
-                            }
-                        }
+                "servers": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/inferenceServer"
                     }
+                },
+                "ingress": {
+                    "$ref": "#/definitions/inferenceIngress"
                 },
                 "modelSource": {
                     "description": "Removed: requesters select HF models through the native router API, not deployment values.",
                     "not": {}
                 },
                 "gpuCount": {
-                    "type": "integer",
-                    "const": 1
+                    "not": {}
                 },
                 "configMaps": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "required": [
-                            "model"
-                        ],
-                        "properties": {
-                            "model": {
-                                "type": "object",
-                                "required": [
-                                    "model-dir"
-                                ],
-                                "properties": {
-                                    "model-dir": {
-                                        "type": "string",
-                                        "pattern": "^/[^.]*[^/]$"
-                                    },
-                                    "model-name": {
-                                        "type": "string",
-                                        "pattern": "^[A-Za-z0-9_.-]+$"
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    "not": {}
                 }
             }
         },
@@ -325,131 +522,6 @@
                 },
                 "namespaceOverride": {
                     "type": "string"
-                },
-                "inference": {
-                    "type": "object",
-                    "properties": {
-                        "image": {
-                            "type": "string"
-                        },
-                        "imagePullPolicy": {
-                            "type": "string"
-                        },
-                        "real": {
-                            "type": "boolean"
-                        },
-                        "verified": {
-                            "type": "string"
-                        },
-                        "configMaps": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": {
-                                        "type": "string"
-                                    },
-                                    "model": {
-                                        "type": "object",
-                                        "properties": {
-                                            "model-dir": {
-                                                "type": "string"
-                                            },
-                                            "model-format": {
-                                                "type": "string"
-                                            },
-                                            "model-name": {
-                                                "type": "string"
-                                            },
-                                            "ctx-size": {
-                                                "type": "string"
-                                            },
-                                            "tensor-type": {
-                                                "type": "string"
-                                            },
-                                            "rope-freq-base": {
-                                                "type": "string"
-                                            },
-                                            "rope-freq-scale": {
-                                                "type": "string"
-                                            },
-                                            "port": {
-                                                "type": "string"
-                                            },
-                                            "host": {
-                                                "type": "string"
-                                            },
-                                            "keep-ctx": {
-                                                "type": "string"
-                                            },
-                                            "no-display": {
-                                                "type": "string"
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "gpuDeviceIds": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        },
-                        "gpuCount": {
-                            "type": "integer",
-                            "description": "Number of GPUs on the node (one replica per GPU). Caps the inference-server replica count so it never exceeds GPU capacity (prevents the pending/insufficient-GPU scheduling race).",
-                            "default": 2
-                        },
-                        "resources": {
-                            "type": "object",
-                            "properties": {
-                                "cpuRequest": {
-                                    "type": "string"
-                                },
-                                "cpuLimit": {
-                                    "type": "string"
-                                },
-                                "gpu": {
-                                    "type": "string"
-                                },
-                                "memory": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "ingress": {
-                            "type": "object",
-                            "properties": {
-                                "host": {
-                                    "type": "string"
-                                },
-                                "path": {
-                                    "type": "string"
-                                },
-                                "entrypoints": {
-                                    "type": "string"
-                                },
-                                "middlewares": {
-                                    "type": "string"
-                                },
-                                "method": {
-                                    "type": "string"
-                                }
-                            }
-                        },
-                        "pvc": {
-                            "type": "object",
-                            "properties": {
-                                "name": {
-                                    "type": "string"
-                                },
-                                "mountPath": {
-                                    "type": "string"
-                                }
-                            }
-                        }
-                    }
                 }
             }
         },

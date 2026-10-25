@@ -1,4 +1,5 @@
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -42,24 +43,33 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(chart["version"], "0.0.0")
         self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
 
-    def render(self, namespace=True, pv=False, extra=(), release_namespace="inference"):
-        result = subprocess.run(
-            [
+    def render(self, namespace=True, pv=False, extra=(), release_namespace="inference", values=None):
+        command = [
                 "helm", "template", "inference", str(CHART),
                 "--namespace", release_namespace,
                 "--set", "nvidia-device-plugin.enabled=false",
                 "--set", f"namespaces.create={str(namespace).lower()}",
                 "--set", f"inference.pv.create={str(pv).lower()}",
                 *extra,
-            ],
-            check=True, capture_output=True, text=True,
-        )
+            ]
+        if values is None:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
+        else:
+            with tempfile.TemporaryDirectory() as directory:
+                values_path = Path(directory) / "values.yaml"
+                values_path.write_text(yaml.safe_dump(values), encoding="utf-8")
+                result = subprocess.run(
+                    [*command[:4], "--values", str(values_path), *command[4:]],
+                    check=True, capture_output=True, text=True,
+                )
         return [resource for resource in yaml.safe_load_all(result.stdout) if resource]
 
     def test_namespace_resource_uses_release_namespace(self):
         resources = self.render(release_namespace="tenant-models", extra=(
             "--set", "inference.ingress.enabled=true",
-            "--set", "inference.ingress.host=models.example.test",
+            "--set", "inference.ingress.routes[0].host=models.example.test",
+            "--set", "inference.ingress.routes[0].path=/v1",
+            "--set", "inference.ingress.routes[0].profile=coder",
         ))
         namespace = next(resource for resource in resources if resource["kind"] == "Namespace")
         self.assertEqual(namespace["metadata"]["name"], "tenant-models")
@@ -105,8 +115,7 @@ class ChartTests(unittest.TestCase):
         resources = self.render(namespace=False, pv=False)
         self.assertEqual(
             {resource["kind"] for resource in resources},
-            {"ConfigMap", "Deployment", "HorizontalPodAutoscaler",
-             "Service", "PersistentVolumeClaim"},
+            {"Deployment", "HorizontalPodAutoscaler", "Service", "PersistentVolumeClaim"},
         )
         for resource in resources:
             self.assertEqual(resource["metadata"]["namespace"], "inference")
@@ -117,23 +126,86 @@ class ChartTests(unittest.TestCase):
         self.assertNotIn("volumeName", claim["spec"])
         self.assertNotIn("storageClassName", claim["spec"])
         self.assertEqual(claim["spec"]["resources"]["requests"]["storage"], "1Gi")
-        deployments = [resource for resource in resources if resource["kind"] == "Deployment"]
-        self.assertEqual(len(deployments), 1)
-        for deployment in deployments:
-            name = deployment["metadata"]["name"]
-            pod = deployment["spec"]["template"]["spec"]
+        deployments = {resource["metadata"]["name"]: resource for resource in resources
+                       if resource["kind"] == "Deployment"}
+        self.assertEqual(set(deployments), {"coder", "judge"})
+        self.assertEqual(deployments["coder"]["spec"]["replicas"], 2)
+        self.assertEqual(deployments["judge"]["spec"]["replicas"], 1)
+        services = {resource["metadata"]["name"]: resource for resource in resources
+                    if resource["kind"] == "Service"}
+        hpas = {resource["metadata"]["name"]: resource for resource in resources
+                if resource["kind"] == "HorizontalPodAutoscaler"}
+        self.assertEqual(set(services), set(deployments))
+        self.assertEqual(set(hpas), set(deployments))
+        for name, rendered in deployments.items():
+            pod = rendered["spec"]["template"]["spec"]
             volume = next(volume for volume in pod["volumes"] if "persistentVolumeClaim" in volume)
             self.assertEqual(volume["persistentVolumeClaim"]["claimName"], "inference-models")
             container = pod["containers"][0]
             self.assertIn({"name": "LLAMA_CACHE", "value": f"/models/llama.cpp/{name}"}, container["env"])
-            self.assertIn({"name": f"{name}-models", "mountPath": "/models"}, container["volumeMounts"])
+            self.assertIn({"name": "models", "mountPath": "/models"}, container["volumeMounts"])
+            self.assertIn("--ctx-size", container["args"])
+            service_port = services[name]["spec"]["ports"][0]
+            self.assertEqual(container["ports"][0]["containerPort"], service_port["port"])
+            self.assertEqual(service_port["targetPort"], container["ports"][0]["name"])
+            self.assertEqual(services[name]["spec"]["selector"],
+                             rendered["spec"]["selector"]["matchLabels"])
+            self.assertEqual(hpas[name]["spec"]["minReplicas"], rendered["spec"]["replicas"])
+            self.assertEqual(hpas[name]["spec"]["maxReplicas"], rendered["spec"]["replicas"])
             self.assertNotIn("imagePullSecrets", pod)
+
+    def test_profile_ports_drive_listener_service_probes_and_ingress_backend(self):
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values["inference"]["servers"][0]["service"]["port"] = 8100
+        values["inference"]["servers"][0]["modelArgs"] = ["--model", "/models/test.gguf"]
+        resources = self.render(values=values, extra=(
+            "--set", "inference.ingress.enabled=true",
+            "--set", "inference.ingress.routes[0].host=models.example.test",
+            "--set", "inference.ingress.routes[0].path=/coder",
+            "--set", "inference.ingress.routes[0].profile=coder",
+            "--set", "inference.ingress.routes[1].host=models.example.test",
+            "--set", "inference.ingress.routes[1].path=/judge",
+            "--set", "inference.ingress.routes[1].profile=judge",
+        ), release_namespace="alternate-inference")
+        deployment = next(resource for resource in resources
+                          if resource["kind"] == "Deployment" and resource["metadata"]["name"] == "coder")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        service = next(resource for resource in resources
+                        if resource["kind"] == "Service" and resource["metadata"]["name"] == "coder")
+        ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
+        self.assertIn("8100", container["args"])
+        self.assertIn("--model", container["args"])
+        self.assertIn("/models/test.gguf", container["args"])
+        self.assertEqual(container["ports"][0]["containerPort"], 8100)
+        self.assertEqual(container["startupProbe"]["httpGet"]["port"], "http")
+        self.assertEqual(service["spec"]["ports"][0]["port"], 8100)
+        self.assertEqual(ingress["metadata"]["namespace"], "alternate-inference")
+        self.assertEqual(ingress["spec"]["rules"][0]["host"], "models.example.test")
+        paths = ingress["spec"]["rules"][0]["http"]["paths"]
+        self.assertEqual({path["path"] for path in paths}, {"/coder", "/judge"})
+        self.assertEqual({path["backend"]["service"]["name"] for path in paths}, {"coder", "judge"})
+        self.assertEqual(next(path for path in paths if path["path"] == "/coder")
+                         ["backend"]["service"]["port"]["number"], 8100)
+
+    def test_profiles_reject_duplicate_names_and_listener_argument_overrides(self):
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values["inference"]["servers"].append(dict(values["inference"]["servers"][0]))
+        with self.assertRaises(subprocess.CalledProcessError) as duplicate:
+            self.render(values=values)
+        self.assertIn("profile names must be unique", duplicate.exception.stderr)
+
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values["inference"]["servers"][0]["serverArgs"].append("--port")
+        with self.assertRaises(subprocess.CalledProcessError) as listener_arg:
+            self.render(values=values)
+        self.assertIn("listener host/port through service.port", listener_arg.exception.stderr)
 
     def test_ingress_uses_alternative_environment_values(self):
         resources = self.render(extra=(
             "--set", "inference.ingress.enabled=true",
-            "--set", "inference.ingress.host=models.example.test",
-            "--set", "inference.ingress.path=/api",
+            "--set", "inference.ingress.routes[0].host=models.example.test",
+            "--set", "inference.ingress.routes[0].path=/api",
+            "--set", "inference.ingress.routes[0].profile=coder",
             "--set", "inference.ingress.className=example-controller",
         ), release_namespace="alternate-inference")
         ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
@@ -143,6 +215,59 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(ingress["spec"]["ingressClassName"], "example-controller")
         self.assertEqual(ingress["spec"]["rules"][0]["host"], "models.example.test")
         self.assertEqual(ingress["spec"]["rules"][0]["http"]["paths"][0]["path"], "/api")
+
+    def test_ingress_tls_references_preprovisioned_secret_for_configured_host(self):
+        resources = self.render(extra=(
+            "--set", "inference.ingress.enabled=true",
+            "--set", "inference.ingress.routes[0].host=models.example.test",
+            "--set", "inference.ingress.routes[0].path=/v1",
+            "--set", "inference.ingress.routes[0].profile=coder",
+            "--set", "inference.ingress.className=nginx",
+            "--set", "inference.ingress.tls[0].secretName=models-tls",
+            "--set", "inference.ingress.tls[0].hosts[0]=models.example.test",
+        ))
+        ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
+        self.assertEqual(ingress["spec"]["rules"][0]["host"], "models.example.test")
+        self.assertEqual(ingress["spec"]["tls"], [{
+            "hosts": ["models.example.test"], "secretName": "models-tls",
+        }])
+        self.assertNotIn("annotations", ingress["metadata"])
+        with self.assertRaises(subprocess.CalledProcessError) as error:
+            self.render(extra=(
+                "--set", "inference.ingress.enabled=true",
+                "--set", "inference.ingress.routes[0].host=models.example.test",
+                "--set", "inference.ingress.routes[0].path=/v1",
+                "--set", "inference.ingress.routes[0].profile=coder",
+                "--set", "inference.ingress.tls[0].secretName=models-tls",
+                "--set", "inference.ingress.tls[0].hosts[0]=other.example.test",
+            ))
+        self.assertIn("must match an inference.ingress.routes host", error.exception.stderr)
+
+    def test_ingress_cert_manager_supports_issuer_and_cluster_issuer(self):
+        for issuer_kind, annotation in (
+            ("Issuer", "cert-manager.io/issuer"),
+            ("ClusterIssuer", "cert-manager.io/cluster-issuer"),
+        ):
+            with self.subTest(issuer_kind=issuer_kind):
+                resources = self.render(extra=(
+                    "--set", "inference.ingress.enabled=true",
+                    "--set", "inference.ingress.routes[0].host=models.example.test",
+                    "--set", "inference.ingress.routes[0].path=/v1",
+                    "--set", "inference.ingress.routes[0].profile=coder",
+                    "--set", "inference.ingress.annotations.owner=platform",
+                    "--set", "inference.ingress.certManager.enabled=true",
+                    "--set", "inference.ingress.certManager.issuerName=letsencrypt-prod",
+                    "--set", f"inference.ingress.certManager.issuerKind={issuer_kind}",
+                    "--set", "inference.ingress.tls[0].secretName=models-tls",
+                    "--set", "inference.ingress.tls[0].hosts[0]=models.example.test",
+                ))
+                ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
+                self.assertEqual(ingress["metadata"]["annotations"], {
+                    "owner": "platform", annotation: "letsencrypt-prod",
+                })
+                self.assertEqual(ingress["spec"]["rules"][0]["host"],
+                                 ingress["spec"]["tls"][0]["hosts"][0])
+                self.assertEqual(ingress["spec"]["tls"][0]["secretName"], "models-tls")
 
     def test_local_pv_uses_alternative_environment_values(self):
         resources = self.render(pv=True, extra=(
@@ -192,7 +317,9 @@ class ChartTests(unittest.TestCase):
             "namespaces.create=disabled", "inference.pv.create=disabled",
             "inference.pvc.name=Invalid_Name", "inference.pvc.storage=not-a-size",
             "inference.pv.create=true", "inference.pv.path=relative/path",
-            "inference.ingress.enabled=true",
+            "inference.ingress.enabled=true", "inference.gpuCount=2",
+            "inference.configMaps[0].name=old-profile",
+            "inference.servers[0].replicas=0",
         ):
             with self.subTest(setting=setting):
                 result = subprocess.run(

@@ -2,7 +2,7 @@
 apiVersion: v2
 name: inference
 description: >
-  llama.cpp inference servers with configurable GPU topology, per-server argument ConfigMaps and model weights from a shared PVC.
+  llama.cpp inference servers with named profiles, configurable server arguments and model weights from a shared PVC.
 type: application
 version: "0.0.0"
 appVersion: "0.1.0"
