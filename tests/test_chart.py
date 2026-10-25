@@ -44,6 +44,13 @@ class ChartTests(unittest.TestCase):
         self.assertIn('helm package "$chart_source" --version "$package_version"', package_step["run"])
         self.assertIn('oras tag "ghcr.io/utopiklab/inference-platform/inference:$package_version" "$version"', package_step["run"])
         self.assertIn("Set up ORAS", [step.get("name") for step in publish_job["steps"]])
+        login_step = next(
+            step for step in publish_job["steps"]
+            if step.get("name") == "Log in to GitHub Container Registry")
+        self.assertIn(
+            'oras login ghcr.io --username "$GHCR_USERNAME" --password-stdin',
+            login_step["run"],
+        )
         chart = yaml.safe_load((CHART / "Chart.yaml").read_text())
         self.assertEqual(chart["version"], "0.0.0")
         self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
