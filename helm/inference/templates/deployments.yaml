@@ -1,15 +1,22 @@
-{{/*
-Inference server Deployments (llama.cpp, one per configured server).
-Faithful to inference/deployment.yaml (Deployments inference-server-gpu{0,1}).
-*/}}
-# ---------------------------------------------------------------------------
-# Inference server Deployments: GPU-bound llama.cpp pods.
-# Each pod runs the OpenAI-compatible server with the per-GPU args ConfigMap
-# mounted at /etc/llama-server-args and native download cache on the shared PVC.
-# ---------------------------------------------------------------------------
 {{- $ns := .Release.Namespace -}}
 {{- $inf := .Values.inference -}}
-{{- range $idx, $cfg := $inf.configMaps }}
+{{- $plugin := index .Values "nvidia-device-plugin" -}}
+{{- if and $plugin.enabled $plugin.namespaceOverride (ne $plugin.namespaceOverride .Release.Namespace) -}}
+{{- fail "nvidia-device-plugin.namespaceOverride must match the release namespace" -}}
+{{- end -}}
+{{- $profileNames := dict -}}
+{{- range $cfg := $inf.servers }}
+{{- if hasKey $profileNames $cfg.name }}
+{{- fail (printf "inference.servers profile names must be unique: %q" $cfg.name) -}}
+{{- end }}
+{{- $_ := set $profileNames $cfg.name true -}}
+{{- range $arg := concat ($cfg.modelArgs | default list) ($cfg.serverArgs | default list) }}
+{{- if or (eq $arg "--host") (eq $arg "--port") (hasPrefix "--host=" $arg) (hasPrefix "--port=" $arg) }}
+{{- fail (printf "inference.servers[%s] must configure listener host/port through service.port, not args" $cfg.name) -}}
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- range $cfg := $inf.servers }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -21,23 +28,22 @@ metadata:
     component: {{ $.Release.Name | default "inference" | quote }}
     app.kubernetes.io/component: inference-server
     app.kubernetes.io/managed-by: Helm
-    gpu: "{{ $idx }}"
+    inference.profile: {{ $cfg.name | quote }}
 spec:
-  # One replica per GPU: cap the pod count to available GPU capacity so the
-  # Deployment can never over-subscribe GPUs (prevents the pending/insufficient
-  # GPU scheduling race). Set via inference.gpuCount.
-  replicas: {{ $inf.gpuCount | default 1 }}
+  replicas: {{ $cfg.replicas }}
   strategy:
     type: Recreate
   selector:
     matchLabels:
       app: inference-server
-      gpu: "{{ $idx }}"
+      inference.profile: {{ $cfg.name | quote }}
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
   template:
     metadata:
       labels:
         app: inference-server
-        gpu: "{{ $idx }}"
+        inference.profile: {{ $cfg.name | quote }}
+        app.kubernetes.io/instance: {{ $.Release.Name | quote }}
     spec:
       {{- with $inf.imagePullSecrets }}
       imagePullSecrets:
@@ -59,72 +65,47 @@ spec:
           image: {{ $inf.image }}
           imagePullPolicy: {{ $inf.imagePullPolicy | default "Always" }}
           args:
-            - --models-max
-            - "1"
-            - --ctx-size
-            - {{ (index $cfg.model "ctx-size") | default "32768" | quote }}
-            {{- if (index $cfg.model "flash-attn") }}
-            - --flash-attn
-            - "on"
-            {{- end }}
             - --host
-            - {{ (index $cfg.model "host") | default "0.0.0.0" | quote }}
+            - "0.0.0.0"
             - --port
-            - {{ (index $cfg.model "port") | default "8000" | quote }}
+            - {{ $cfg.service.port | quote }}
+            {{- with $cfg.modelArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $cfg.serverArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           env:
             - name: LLAMA_CACHE
-              value: {{ printf "%s/llama.cpp/%s" (index $cfg.model "model-dir") $cfg.name | quote }}
+              value: {{ printf "%s/llama.cpp/%s" $cfg.modelDir $cfg.name | quote }}
           volumeMounts:
-            - name: {{ $cfg.name }}-args
-              mountPath: /etc/llama-server-args
-              readOnly: true
-            - name: {{ $cfg.name }}-models
-              mountPath: {{ (index $cfg.model "model-dir") | quote }}
+            - name: models
+              mountPath: {{ $cfg.modelDir | quote }}
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: {{ $cfg.service.port }}
               protocol: TCP
-          resources:
-            {{- if eq $inf.resources.gpu "1" }}
-            requests:
-              cpu: {{ $inf.resources.cpuRequest | default "1" }}
-              nvidia.com/gpu: {{ $inf.resources.gpu }}
-              memory: {{ $inf.resources.memory }}
-            limits:
-              cpu: {{ $inf.resources.cpuLimit | default "2" }}
-              nvidia.com/gpu: {{ $inf.resources.gpu }}
-              memory: {{ $inf.resources.memory }}
-            {{- else }}
-            requests:
-              cpu: {{ $inf.resources.cpuRequest | default "1" }}
-              memory: {{ $inf.resources.memory }}
-            limits:
-              cpu: {{ $inf.resources.cpuLimit | default "2" }}
-              memory: {{ $inf.resources.memory }}
-            {{- end }}
+          resources: {{ toYaml $cfg.resources | nindent 12 }}
           startupProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: http
             periodSeconds: 10
             failureThreshold: 180
           readinessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: http
             initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8000
+              port: http
             initialDelaySeconds: 20
             periodSeconds: 30
       volumes:
-        - name: {{ $cfg.name }}-args
-          configMap:
-            name: {{ $cfg.name }}
-        - name: {{ $cfg.name }}-models
+        - name: models
           persistentVolumeClaim:
             claimName: {{ $.Values.inference.pvc.name }}
 {{- end }}
