@@ -44,6 +44,17 @@ class ChartTests(unittest.TestCase):
         self.assertIn('helm package "$chart_source" --version "$package_version"', package_step["run"])
         self.assertIn('oras tag "ghcr.io/utopiklab/inference-platform/inference:$package_version" "$version"', package_step["run"])
         self.assertIn("Set up ORAS", [step.get("name") for step in publish_job["steps"]])
+        self.assertIn("inference-release-manifest.json", package_step["run"])
+        self.assertIn('"chartDigest": digest', package_step["run"])
+        self.assertIn('"chartVersion": version', package_step["run"])
+        self.assertIn('"images": {"inference":', package_step["run"])
+        manifest_artifact = next(
+            step for step in publish_job["steps"]
+            if step.get("uses") == "actions/upload-artifact@v4")
+        self.assertEqual(
+            manifest_artifact["with"]["name"],
+            "inference-platform-release-${{ github.sha }}",
+        )
         login_step = next(
             step for step in publish_job["steps"]
             if step.get("name") == "Log in to GitHub Container Registry")
