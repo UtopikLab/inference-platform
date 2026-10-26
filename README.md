@@ -14,19 +14,25 @@ Chart publication and cluster deployment are separate, gated steps.
 
 The optional chart-publish job pushes `inference` to
 `oci://ghcr.io/utopiklab/inference-platform`, which produces the package
-`ghcr.io/utopiklab/inference-platform/inference`. It runs after chart validation
-on pushes to `main` or a `workflow_dispatch` run on `main`, and only when the
-repository Actions variable `HELM_CHART_PUBLISH_ENABLED` is exactly `true`.
-Pushes of `vX.Y.Z` or `X.Y.Z` release tags publish using the tag's SemVer as
-the chart version (the optional leading `v` is removed). Main-branch pushes
-and manual runs publish with a unique `0.0.0-main.<run>.<attempt>` version.
-Each publication also creates `0.0.0-sha.<full-commit>` for exact source
+`ghcr.io/utopiklab/inference-platform/inference`. Both product repositories use
+the same chart publication policy: lint, tests, and chart validation must succeed,
+the event must be `push` or `workflow_dispatch` on main or a version tag, and the
+repository Actions variable `HELM_CHART_PUBLISH_ENABLED` must be exactly `true`.
+Tags must be strictly `vMAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH`, without leading
+zeroes except `0`; the optional `v` is removed for the immutable release version.
+Main publishes the valid SemVer `0.0.0-sha.<full-commit>` and moves the OCI `main`
+alias to that verified source digest. Tag releases never move `main`.
+Every publication retains `0.0.0-sha.<full-commit>` for exact source
 resolution. The chart carries that source commit in its OCI revision
 annotation. Existing release versions are never replaced; an existing source
 version is reused only when its annotation matches, otherwise publication
-fails. Infra resolves the chart by the exact version derived from the selected
-Git ref and fails if it is absent; it never falls back to a mutable `main` or
-`latest` alias.
+fails. The source commit and registry digest are verified before updating the
+main alias or reporting successful publication. Infra consumes the OCI chart
+repository and exact version configured for the environment, using
+`helm pull --version`, and fails if it is absent; it never falls back to a mutable
+`main` or `latest` alias. Product release-manifest JSON and intermediate
+chart/image manifest artifacts are no longer generated. Code Factory's image
+publication remains main-only; its tag runs publish charts only.
 The checked-in `helm/inference/Chart.yaml` version is only a valid placeholder;
 the workflow supplies the package version. Pull requests remain
 validation-only. The runtime image pin is unchanged.
@@ -152,14 +158,47 @@ controller/TLS, model storage, image-pull authentication, and dedicated runner
 authorization must be independently verified. No publication or provisioning
 has been performed by these source changes.
 
+## CI Pipeline
+
+Both product repositories use matching lint, Python test, Helm validation,
+optional chart publication, and CI summary jobs. The test jobs share the same
+step scripts, configured by a `slice` matrix dimension and repository-level
+test defaults. Jobs are named `test-<slice>`. Inference installs the root
+`requirements-test.txt` with no matrix overrides or service requirements;
+Code Factory derives directory paths and test requirements from every slice,
+including shared under `orchestrator/shared/`, without overrides. Both
+workflows install one requirements file per slice. Artifact names derive
+from the slice. Inference has one shared
+slice collecting the entire `tests/` directory with pytest and PyYAML; Code
+Factory has five isolated slices. Both matrices disable
+fail-fast. Tests include unittest cases and emit a JUnit report plus a GitHub
+job summary. The `python-test-results-shared` artifact is retained for 14 days, including failed
+test runs that produce a report. The final summary includes publication
+outcomes, even when jobs fail or are skipped.
+
+Both workflows use the same Helm dependency preparation and lint/render scripts.
+Workflow environment settings select locked dependency builds, strict lint,
+values files, render settings, and expected images. Inference builds its locked
+NVIDIA chart dependency before tests, validation, and packaging and uses strict
+lint. Code Factory validates its example values and renders with management
+enabled, checking all four service images.
+
+Inference uses the upstream digest-pinned runtime image and therefore
+has no container-build job. Code Factory additionally builds four services.
+Publication remains opt-in with the existing product-specific ref rules and
+coordinates. Source annotations, registry digest verification, and test-result
+artifacts are retained; deployment selects charts by exact version, without
+product release-manifest artifacts.
+
 ## Local Validation
 
 ```sh
 helm repo add nvidia https://nvidia.github.io/k8s-device-plugin
 helm dependency build helm/inference
-python3 -m pip install "PyYAML>=6,<7" ruff
+python3 -m pip install -r requirements-test.txt
+python3 -m pip install ruff
 ruff check tests/
-python3 -m unittest discover -s tests -v
+python3 -m pytest tests/ -v -ra --durations=10 --junitxml=test-results/pytest.xml
 helm lint --strict helm/inference
 helm template inference helm/inference --namespace inference
 ```
