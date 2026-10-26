@@ -334,7 +334,7 @@ else:
     aliases = [command for command in commands if command[:2] == ["oras", "tag"]]
     assert len(aliases) == int(succeeds and not tagged)
     if aliases:
-        assert aliases[0] == ["oras", "tag", f"{job['env']['CHART_OCI_REPOSITORY']}/{job['env']['CHART_NAME']}@sha256:" + "b" * 64, "main"]
+        assert aliases[0] == ["oras", "tag", f"{job['env']['CHART_OCI_REPOSITORY']}/{job['env']['CHART_NAME']}@sha256:" + "b" * 64, "dev"]
     if scenario in ("pull-error", "mismatch") and not tagged or scenario == "release-exists" and tagged:
         assert not pushes
     if not succeeds:
