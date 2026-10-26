@@ -232,7 +232,7 @@ def test_chart_publish_gate(event, ref, enabled, validated):
 
 
 @pytest.mark.parametrize("ref,version", [
-    ("refs/heads/main", "0.0.0-sha." + "a" * 40),
+    ("refs/heads/main", "0.0.0-dev"),
     ("refs/tags/v1.2.3", "1.2.3"), ("refs/tags/1.2.3", "1.2.3"),
     ("refs/tags/v0.0.0", "0.0.0"), ("refs/tags/10.20.30", "10.20.30"),
     ("refs/tags/v0.0.0-dev", "0.0.0-dev"), ("refs/tags/1.2.3-rc.1", "1.2.3-rc.1"),
@@ -323,7 +323,7 @@ else:
         "COMMAND_LOG": str(log), "PATH": f"{Path(sys.executable).parent}:{binaries}:{os.environ['PATH']}",
         "GITHUB_REF": "refs/tags/v1.2.3" if tagged else "refs/heads/main",
         "SOURCE_COMMIT": "a" * 40, "SOURCE_CHART_VERSION": source_version,
-        "PACKAGE_VERSION": "1.2.3" if tagged else source_version,
+        "PACKAGE_VERSION": "1.2.3" if tagged else "0.0.0-dev",
         "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
     }
     result = subprocess.run(
@@ -414,7 +414,7 @@ class ChartTests(unittest.TestCase):
         chart = yaml.safe_load((CHART / "Chart.yaml").read_text())
         self.assertEqual(chart["version"], "0.0.0")
         self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
-        self.assertIn('chart_version="$source_version"', version_step["run"])
+        self.assertIn('chart_version="0.0.0-dev"', version_step["run"])
 
     def render(self, namespace=True, pv=False, extra=(), release_namespace="inference", values=None):
         command = [
