@@ -18,19 +18,21 @@ The optional chart-publish job pushes `inference` to
 the same chart publication policy: lint, tests, and chart validation must succeed,
 the event must be `push` or `workflow_dispatch` on main or a version tag, and the
 repository Actions variable `HELM_CHART_PUBLISH_ENABLED` must be exactly `true`.
-Tags must be strictly `vMAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH`, without leading
-zeroes except `0`; the optional `v` is removed for the immutable release version.
-Main publishes the valid SemVer `0.0.0-sha.<full-commit>` and moves the OCI `main`
-alias to that verified source digest. Tag releases never move `main`.
+Tags must be exact SemVer versions with an optional leading `v`; prerelease
+identifiers follow SemVer and numeric identifiers cannot have leading zeroes.
+The infra Dev profile pins the
+exact prerelease version `0.0.0-dev`, distinct from the mutable OCI `dev` alias.
+Main publishes the valid SemVer `0.0.0-sha.<full-commit>` and moves `dev` to that
+verified source digest. Tag releases never move `dev`.
 Every publication retains `0.0.0-sha.<full-commit>` for exact source
 resolution. The chart carries that source commit in its OCI revision
 annotation. Existing release versions are never replaced; an existing source
 version is reused only when its annotation matches, otherwise publication
 fails. The source commit and registry digest are verified before updating the
-main alias or reporting successful publication. Infra consumes the OCI chart
+`dev` alias or reporting successful publication. Infra consumes the OCI chart
 repository and exact version configured for the environment, using
 `helm pull --version`, and fails if it is absent; it never falls back to a mutable
-`main` or `latest` alias. Product release-manifest JSON and intermediate
+`dev` or `latest` alias. Product release-manifest JSON and intermediate
 chart/image manifest artifacts are no longer generated. Code Factory's image
 publication remains main-only; its tag runs publish charts only.
 The checked-in `helm/inference/Chart.yaml` version is only a valid placeholder;
