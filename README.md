@@ -22,14 +22,17 @@ Tags must be exact SemVer versions with an optional leading `v`; prerelease
 identifiers follow SemVer and numeric identifiers cannot have leading zeroes.
 The infra Dev profile pins the
 exact prerelease version `0.0.0-dev`, distinct from the mutable OCI `dev` alias.
-Main publishes the valid SemVer `0.0.0-sha.<full-commit>` and moves `dev` to that
+Each eligible main publication publishes the valid SemVer `0.0.0-sha.<full-commit>`,
+replaces the mutable development package `0.0.0-dev`, and moves `dev` to the
 verified source digest. Tag releases never move `dev`.
 Every publication retains `0.0.0-sha.<full-commit>` for exact source
 resolution. The chart carries that source commit in its OCI revision
 annotation. Existing release versions are never replaced; an existing source
 version is reused only when its annotation matches, otherwise publication
-fails. The source commit and registry digest are verified before updating the
-`dev` alias or reporting successful publication. Infra consumes the OCI chart
+fails. The source commit and registry digest are verified before publishing
+`0.0.0-dev`, updating the `dev` alias, or reporting successful publication.
+The development package has its own version and digest; `dev` aliases the
+commit-addressed source package. Infra consumes the OCI chart
 repository and exact version configured for the environment, using
 `helm pull --version`, and fails if it is absent; it never falls back to a mutable
 `dev` or `latest` alias. Product release-manifest JSON and intermediate

@@ -342,9 +342,13 @@ else:
         assert not pushes
     if not succeeds:
         assert not output.exists()
+        assert not (tmp_path / "summary.md").exists()
+        assert not any(Path(command[2]).name == "inference-0.0.0-dev.tgz" for command in pushes)
         return
-    assert len(pushes) == int(tagged) + int(scenario != "same")
+    assert len(pushes) == 1 + int(scenario != "same")
     expected_versions = (["1.2.3"] if tagged else []) + ([source_version] if scenario != "same" else [])
+    if not tagged:
+        expected_versions.append("0.0.0-dev")
     assert [Path(command[2]).name for command in pushes] == [
         f"{job['env']['CHART_NAME']}-{version}.tgz" for version in expected_versions
     ]
@@ -354,7 +358,9 @@ else:
     ] == "a" * 40
     assert not output.exists()
     summary = (tmp_path / "summary.md").read_text()
-    assert f"Published immutable chart version: `{environment['PACKAGE_VERSION']}`" in summary
+    publication_kind = "immutable release" if tagged else "mutable development"
+    assert f"Published {publication_kind} chart version: `{environment['PACKAGE_VERSION']}`" in summary
+    assert ("Updated OCI alias: `dev`" in summary) == (not tagged)
     assert f"Source chart version: `{source_version}`" in summary
     assert f"Source digest: `sha256:{'b' * 64}`" in summary
 
