@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="34" time="3.955" timestamp="2026-10-26T17:28:08.949927+00:00" hostname="k8s-node01"><testcase classname="tests.test_chart" name="test_ci_workflow_reporting[False]" time="0.160" /><testcase classname="tests.test_chart" name="test_ci_workflow_reporting[True]" time="0.150" /><testcase classname="tests.test_chart" name="test_ci_workflow_matrix_partition_and_dependencies" time="0.266" /><testcase classname="tests.test_chart" name="test_ci_workflow_helm_configuration" time="0.137" /><testcase classname="tests.test_chart.ChartTests" name="test_chart_publication_uses_release_tag_and_commit_addressed_versions" time="0.028"><failure message="AssertionError: 'echo &quot;package_version=0.0.0-main&quot;' not found in 'if [[ &quot;$GITHUB_REF&quot; == refs/tags/* ]]; then\n  chart_version=&quot;${GITHUB_REF_NAME#v}&quot;\n  if [[ ! &quot;$chart_version&quot; =~ ^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]; then\n    echo &quot;Release tag must be vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH&quot; &gt;&amp;2\n    exit 1\n  fi\nelif [[ &quot;$GITHUB_REF&quot; == refs/heads/main ]]; then\n  chart_version=&quot;dev&quot;\nelse\n  echo &quot;Unsupported chart publication ref: $GITHUB_REF&quot; &gt;&amp;2\n  exit 1\nfi\necho &quot;version=$chart_version&quot; &gt;&gt; &quot;$GITHUB_OUTPUT&quot;\nif [[ &quot;$chart_version&quot; == dev ]]; then\n  echo &quot;package_version=dev&quot; &gt;&gt; &quot;$GITHUB_OUTPUT&quot;\nelse\n  echo &quot;package_version=$chart_version&quot; &gt;&gt; &quot;$GITHUB_OUTPUT&quot;\nfi\necho &quot;source_version=0.0.0-sha.${GITHUB_SHA}&quot; &gt;&gt; &quot;$GITHUB_OUTPUT&quot;\n'">self = &lt;test_chart.ChartTests testMethod=test_chart_publication_uses_release_tag_and_commit_addressed_versions&gt;
+
+    def test_chart_publication_uses_release_tag_and_commit_addressed_versions(self):
+        workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(workflow["on"]["push"]["tags"], ["v*", "[0-9]*"])
+        publish_job = workflow["jobs"]["publish-chart"]
+        self.assertIn("refs/tags/", publish_job["if"])
+        self.assertIn("refs/heads/main", publish_job["if"])
+        self.assertIn("Install chart metadata tool", [
+            step.get("name") for step in publish_job["steps"]
+        ])
+        version_step = next(
+            step for step in publish_job["steps"] if step.get("id") == "chart-version")
+        self.assertIn('${GITHUB_REF_NAME#v}', version_step["run"])
+        self.assertEqual(version_step["env"]["GITHUB_RUN_NUMBER"], "${{ github.run_number }}")
+        self.assertEqual(version_step["env"]["GITHUB_RUN_ATTEMPT"], "${{ github.run_attempt }}")
+        self.assertIn("0.0.0-sha.${GITHUB_SHA}", version_step["run"])
+        self.assertIn("MAJOR.MINOR.PATCH", version_step["run"])
+        self.assertIn('echo "package_version=$chart_version"', version_step["run"])
+        package_step = next(
+            step for step in publish_job["steps"]
+            if step.get("id") == "package-and-publish")
+        self.assertIn("org.opencontainers.image.revision", package_step["run"])
+        self.assertIn("Refusing to overwrite existing released chart version", package_step["run"])
+        self.assertIn('if [[ "$kind" == build ]]; then', package_step["run"])
+        self.assertIn('helm package "$chart_source" --version "$package_version"', package_step["run"])
+        self.assertIn('oras tag "ghcr.io/utopiklab/inference-platform/inference:$package_version" "$version"', package_step["run"])
+        self.assertIn("Set up ORAS", [step.get("name") for step in publish_job["steps"]])
+        manifest_step = next(
+            step for step in publish_job["steps"]
+            if step.get("name") == "Write exact chart manifest")
+        self.assertIn("inference-release-manifest.json", manifest_step["run"])
+        self.assertIn('"chartDigest": digest', manifest_step["run"])
+        self.assertIn('"chartVersion": version', manifest_step["run"])
+        self.assertIn('"images": {"inference":', manifest_step["run"])
+        manifest_artifact = next(
+            step for step in publish_job["steps"]
+            if step.get("uses") == "actions/upload-artifact@v4")
+        self.assertEqual(
+            manifest_artifact["with"]["name"],
+            "inference-platform-release-${{ github.sha }}",
+        )
+        login_step = next(
+            step for step in publish_job["steps"]
+            if step.get("name") == "Log in to GHCR")
+        self.assertIn(
+            'oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin',
+            login_step["run"],
+        )
+        chart = yaml.safe_load((CHART / "Chart.yaml").read_text())
+        self.assertEqual(chart["version"], "0.0.0")
+        self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
+&gt;       self.assertIn('echo "package_version=0.0.0-main"', version_step["run"])
+E       AssertionError: 'echo "package_version=0.0.0-main"' not found in 'if [[ "$GITHUB_REF" == refs/tags/* ]]; then\n  chart_version="${GITHUB_REF_NAME#v}"\n  if [[ ! "$chart_version" =~ ^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]; then\n    echo "Release tag must be vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH" &gt;&amp;2\n    exit 1\n  fi\nelif [[ "$GITHUB_REF" == refs/heads/main ]]; then\n  chart_version="dev"\nelse\n  echo "Unsupported chart publication ref: $GITHUB_REF" &gt;&amp;2\n  exit 1\nfi\necho "version=$chart_version" &gt;&gt; "$GITHUB_OUTPUT"\nif [[ "$chart_version" == dev ]]; then\n  echo "package_version=dev" &gt;&gt; "$GITHUB_OUTPUT"\nelse\n  echo "package_version=$chart_version" &gt;&gt; "$GITHUB_OUTPUT"\nfi\necho "source_version=0.0.0-sha.${GITHUB_SHA}" &gt;&gt; "$GITHUB_OUTPUT"\n'
+
+tests/test_chart.py:271: AssertionError</failure></testcase><testcase classname="tests.test_chart.ChartTests" name="test_created_local_pv_and_claim_use_the_same_default_class_and_binding" time="0.122" /><testcase classname="tests.test_chart.ChartTests" name="test_device_plugin_uses_release_namespace_and_rejects_conflicting_override" time="0.241" /><testcase classname="tests.test_chart.ChartTests" name="test_ingress_cert_manager_supports_issuer_and_cluster_issuer" time="0.232" /><testcase classname="tests.test_chart.ChartTests" name="test_ingress_tls_references_preprovisioned_secret_for_configured_host" time="0.201" /><testcase classname="tests.test_chart.ChartTests" name="test_ingress_uses_alternative_environment_values" time="0.121" /><testcase classname="tests.test_chart.ChartTests" name="test_local_pv_uses_alternative_environment_values" time="0.096" /><testcase classname="tests.test_chart.ChartTests" name="test_namespace_and_pv_switches_are_independent" time="0.475" /><testcase classname="tests.test_chart.ChartTests" name="test_namespace_is_not_a_chart_value" time="0.027" /><testcase classname="tests.test_chart.ChartTests" name="test_namespace_resource_uses_release_namespace" time="0.112" /><testcase classname="tests.test_chart.ChartTests" name="test_profile_ports_drive_listener_service_probes_and_ingress_backend" time="0.120" /><testcase classname="tests.test_chart.ChartTests" name="test_profiles_reject_duplicate_names_and_listener_argument_overrides" time="0.202" /><testcase classname="tests.test_chart.ChartTests" name="test_routine_render_is_namespaced_and_preserves_storage_and_cache" time="0.125" /><testcase classname="tests.test_chart.ChartTests" name="test_schema_rejects_invalid_ownership_and_storage_values" time="1.048" /></testsuite></testsuites>
