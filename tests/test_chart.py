@@ -1,13 +1,372 @@
+import json
+import os
+import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "helm/inference"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+
+
+@pytest.mark.parametrize("report_exists", [False, True])
+def test_ci_workflow_reporting(tmp_path, report_exists):
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    jobs = workflow["jobs"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert jobs["lint"]["name"] == "Lint Python"
+    assert jobs["test"]["name"] == "test-${{ matrix.slice }}"
+    assert jobs["chart-validation"]["name"] == "Validate Helm chart"
+    assert jobs["publish-chart"]["needs"] == ["lint", "test", "chart-validation"]
+    assert "HELM_CHART_PUBLISH_ENABLED == 'true'" in jobs["publish-chart"]["if"]
+    assert set(jobs["summary"]["needs"]) == set(jobs) - {"summary"}
+    assert jobs["summary"]["if"] == "always()"
+    for job in jobs.values():
+        for step in job["steps"]:
+            assert step.get("name")
+            if "run" not in step:
+                continue
+            script = step["run"]
+            if step.get("shell") == "python":
+                compile(script, "<workflow>", "exec")
+            else:
+                subprocess.run(
+                    ["bash", "-n"], input=re.sub(r"\$\{\{.*?\}\}", "ci-value", script),
+                    text=True, check=True, capture_output=True,
+                )
+    steps = {step["name"]: step for step in jobs["test"]["steps"]}
+    assert steps["Run tests"]["id"] == "pytest"
+    assert steps["Run tests"]["run"] == (
+        'mkdir -p test-results\npytest "$TEST_PATH" -v -ra --durations=10 --junitxml=test-results/pytest.xml\n'
+    )
+    assert steps["Summarize test results"]["if"] == "always()"
+    upload = steps["Upload test results"]
+    assert upload["if"] == "always() && hashFiles('test-results/pytest.xml') != ''"
+    assert upload["with"] == {
+        "name": "${{ format('python-test-results-{0}', matrix.slice) }}",
+        "path": "test-results/pytest.xml", "retention-days": "14",
+    }
+    assert steps["Summarize test results"]["env"]["TEST_ARTIFACT"] == upload["with"]["name"]
+    if report_exists:
+        report = tmp_path / "test-results/pytest.xml"
+        report.parent.mkdir()
+        report.write_text(
+            '<testsuites><testsuite tests="3" failures="1" errors="0" skipped="1" time="1.5">'
+            '<testcase classname="module" name="passes" time="0.5"/>'
+            '<testcase classname="module" name="fails" time="0.5">'
+            '<failure message="bad | &lt;value&gt;"/></testcase>'
+            '<testcase classname="module" name="skips" time="0.5">'
+            '<skipped message="optional"/></testcase></testsuite></testsuites>',
+            encoding="utf-8",
+        )
+    summary = tmp_path / "summary.md"
+    slices = jobs["test"]["strategy"]["matrix"]["slice"]
+    environment = {
+        **os.environ, "GITHUB_STEP_SUMMARY": str(summary), "TEST_OUTCOME": "failure",
+        "TEST_ARTIFACT": f"python-test-results-{slices[0]}",
+    }
+    subprocess.run(
+        [sys.executable, "-c", steps["Summarize test results"]["run"]],
+        cwd=tmp_path, env=environment, check=True,
+    )
+    text = summary.read_text()
+    if report_exists:
+        assert "| 3 | 1 | 1 | 0 | 1 | 1.50s |" in text
+        assert "bad &#124; &lt;value&gt;" in text
+        assert "**python-test-results-shared** artifact" in text
+    else:
+        assert "No test report was produced" in text
+    environment.update({
+        "JOB_RESULTS": json.dumps({"test": {"result": "failure"}, "publish-chart": {"result": "skipped"}}),
+        "SOURCE_COMMIT": "a" * 40, "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_REPOSITORY": "owner/product", "GITHUB_RUN_ID": "123",
+    })
+    subprocess.run(
+        [sys.executable, "-c", jobs["summary"]["steps"][0]["run"]],
+        cwd=tmp_path, env=environment, check=True,
+    )
+    text = summary.read_text()
+    assert "| test | failure |" in text
+    assert "| publish-chart | skipped |" in text
+    assert "https://github.com/owner/product/actions/runs/123" in text
+
+
+def test_ci_workflow_matrix_partition_and_dependencies(tmp_path):
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    test_job = workflow["jobs"]["test"]
+    assert test_job["strategy"] == {
+        "fail-fast": "false", "matrix": {"slice": ["shared"]},
+    }
+    defaults = {key: value for key, value in workflow["env"].items() if key.startswith("TEST_")}
+    assert defaults == {
+        "TEST_REQUIREMENTS_FORMAT": "requirements-test.txt",
+        "TEST_PATH_FORMAT": "tests",
+    }
+    effective = {key.removesuffix("_FORMAT"): value.format("shared") for key, value in defaults.items()}
+    assert (ROOT / effective["TEST_REQUIREMENTS"]).read_text().splitlines() == ["pytest", "PyYAML>=6,<7"]
+    assert "env" not in test_job
+    steps = {step["name"]: step for step in test_job["steps"]}
+    assert steps["Set up Helm"]["uses"] == "azure/setup-helm@v4"
+    assert steps["Install dependencies"]["env"] == {
+        "TEST_REQUIREMENTS": "${{ format(env.TEST_REQUIREMENTS_FORMAT, matrix.slice) }}",
+    }
+    assert steps["Run tests"]["env"] == {
+        "TEST_PATH": "${{ format(env.TEST_PATH_FORMAT, matrix.slice) }}",
+    }
+    assert steps["Install dependencies"]["run"] == (
+        'python -m pip install --upgrade pip\npython -m pip install -r "$TEST_REQUIREMENTS"\n'
+    )
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    log = tmp_path / "commands.jsonl"
+    for command in ("python", "pytest"):
+        executable = binaries / command
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "with open(os.environ['COMMAND_LOG'], 'a') as log:\n"
+            "    log.write(json.dumps([Path(sys.argv[0]).name, *sys.argv[1:]]) + '\\n')\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+    environment = {
+        **os.environ, "PATH": f"{binaries}:{os.environ['PATH']}", "COMMAND_LOG": str(log),
+        **effective,
+    }
+    for step in ("Install dependencies", "Run tests"):
+        subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", steps[step]["run"]],
+            cwd=tmp_path, env=environment, check=True, capture_output=True, text=True,
+        )
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    assert commands == [
+        ["python", "-m", "pip", "install", "--upgrade", "pip"],
+        ["python", "-m", "pip", "install", "-r", "requirements-test.txt"],
+        ["pytest", "tests", "-v", "-ra", "--durations=10", "--junitxml=test-results/pytest.xml"],
+    ]
+    environment.update({
+        "TEST_REQUIREMENTS": "requirements with spaces $(touch injected).txt",
+        "TEST_PATH": "tests with spaces",
+    })
+    for step in ("Install dependencies", "Run tests"):
+        subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", steps[step]["run"]],
+            cwd=tmp_path, env=environment, check=True, capture_output=True, text=True,
+        )
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    assert commands[-2] == [
+        "python", "-m", "pip", "install", "-r", "requirements with spaces $(touch injected).txt",
+    ]
+    assert commands[-1][1:-4] == ["tests with spaces"]
+    assert not (tmp_path / "injected").exists()
+
+
+def test_ci_workflow_helm_configuration(tmp_path):
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    jobs = workflow["jobs"]
+    prepare = [next(step["run"] for step in jobs[job]["steps"]
+                    if step["name"] == "Prepare Helm dependencies")
+               for job in ("test", "chart-validation", "publish-chart")]
+    assert len(set(prepare)) == 1
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    log = tmp_path / "commands.jsonl"
+    executable = binaries / "helm"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['COMMAND_LOG'], 'a') as log:\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    environment = {
+        **os.environ, **workflow["env"], "PATH": f"{binaries}:{os.environ['PATH']}",
+        "COMMAND_LOG": str(log),
+    }
+    script = next(step["run"] for step in jobs["chart-validation"]["steps"]
+                  if step["name"] == "Lint and render Helm chart")
+    for command in (prepare[0], script):
+        subprocess.run(
+            ["bash", "-e", "-o", "pipefail", "-c", command],
+            cwd=tmp_path, env=environment, check=True, capture_output=True, text=True,
+        )
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    assert commands == [
+        ["repo", "add", "nvidia", "https://nvidia.github.io/k8s-device-plugin"],
+        ["dependency", "build", "helm/inference"],
+        ["lint", "helm/inference", "--strict"],
+        ["template", "inference", "helm/inference", "--namespace", "inference"],
+    ]
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch", "pull_request", "release"])
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/tags/v1.2.3", "refs/heads/other", "refs/pull/1/merge"])
+@pytest.mark.parametrize("enabled", ["true", "false", "TRUE"])
+@pytest.mark.parametrize("validated", [True, False])
+def test_chart_publish_gate(event, ref, enabled, validated):
+    job = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)["jobs"]["publish-chart"]
+    expression = " ".join(job["if"].removeprefix("${{").removesuffix("}}").split())
+    assert expression == (
+        "success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && "
+        "(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) && "
+        "vars.HELM_CHART_PUBLISH_ENABLED == 'true'"
+    )
+    expression = expression.replace("startsWith(github.ref, 'refs/tags/')", str(ref.startswith("refs/tags/")))
+    for key, value in {
+        "success()": validated, "github.event_name": event, "github.ref": ref,
+        "vars.HELM_CHART_PUBLISH_ENABLED": enabled,
+    }.items():
+        expression = expression.replace(key, repr(value))
+    actual = eval(expression.replace("&&", "and").replace("||", "or"), {"__builtins__": {}})
+    assert actual == (validated and event in ("push", "workflow_dispatch")
+                      and (ref == "refs/heads/main" or ref.startswith("refs/tags/")) and enabled == "true")
+    assert job["needs"] == ["lint", "test", "chart-validation"]
+
+
+@pytest.mark.parametrize("ref,version", [
+    ("refs/heads/main", "0.0.0-sha." + "a" * 40),
+    ("refs/tags/v1.2.3", "1.2.3"), ("refs/tags/1.2.3", "1.2.3"),
+    ("refs/tags/v0.0.0", "0.0.0"), ("refs/tags/10.20.30", "10.20.30"),
+    *[("refs/tags/" + tag, None) for tag in (
+        "v01.2.3", "1.02.3", "1.2.03", "v1.2", "vv1.2.3", "v1.2.3-rc.1",
+        "1.2.3+build", "dev", "1.2.3/other", "1.2.3\ninjected", "",
+    )],
+    ("refs/heads/other", None), ("refs/pull/1/merge", None),
+])
+def test_chart_version_selection(tmp_path, ref, version):
+    job = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)["jobs"]["publish-chart"]
+    selector = job["steps"][0]
+    assert selector["id"] == "chart-version"
+    output = tmp_path / "output"
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", selector["run"]], check=False, capture_output=True, text=True,
+        env={**os.environ, "GITHUB_REF": ref, "GITHUB_SHA": "a" * 40, "GITHUB_OUTPUT": str(output)},
+    )
+    assert (result.returncode == 0) == (version is not None), result.stderr
+    if version is None:
+        assert not output.exists()
+    else:
+        assert dict(line.split("=", 1) for line in output.read_text().splitlines()) == {
+            "package_version": version, "source_version": "0.0.0-sha." + "a" * 40,
+        }
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+@pytest.mark.parametrize("scenario", [
+    "fresh", "same", "mismatch", "release-exists", "pull-error", "bad-digest", "bad-revision", "digest-mismatch",
+])
+def test_chart_publisher_versions_and_verification(tmp_path, tagged, scenario):
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    job = workflow["jobs"]["publish-chart"]
+    steps = {step["name"]: step for step in job["steps"]}
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    stub = binaries / "publication-stub"
+    stub.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+command = Path(sys.argv[0]).name
+with open(os.environ["COMMAND_LOG"], "a") as log:
+    log.write(json.dumps([command, *args]) + "\\n")
+scenario = os.environ["SCENARIO"]
+digest = "sha256:" + "b" * 64
+if command == "oras":
+    if args[0] == "resolve":
+        print("sha256:" + "c" * 64 if scenario == "digest-mismatch" else digest)
+    sys.exit(0)
+if args[0] == "pull":
+    version = args[args.index("--version") + 1]
+    destination = Path(args[args.index("--destination") + 1])
+    source = version.startswith("0.0.0-sha.")
+    if scenario == "pull-error":
+        sys.exit("unauthorized")
+    exists = (Path(os.environ["RUNNER_TEMP"]) / ("pushed-" + version)).exists()
+    if not exists and not (source and scenario in ("same", "mismatch")) and not (not source and scenario == "release-exists"):
+        sys.exit("manifest unknown: 404 not found")
+    (destination / (os.environ["CHART_NAME"] + "-" + version + ".tgz")).touch()
+    print("Digest: " + ("invalid" if scenario == "bad-digest" else digest), file=sys.stderr)
+elif args[:2] == ["show", "chart"]:
+    revision = os.environ["SOURCE_COMMIT"]
+    if scenario == "mismatch" or (scenario == "bad-revision" and "source-chart/" in args[2]):
+        revision = "c" * 40
+    print("annotations:\\n  org.opencontainers.image.revision: " + revision)
+elif args[0] == "package":
+    version = args[args.index("--version") + 1]
+    destination = Path(args[args.index("--destination") + 1])
+    (destination / (os.environ["CHART_NAME"] + "-" + version + ".tgz")).touch()
+elif args[0] == "push":
+    version = Path(args[1]).name.removeprefix(os.environ["CHART_NAME"] + "-").removesuffix(".tgz")
+    (Path(os.environ["RUNNER_TEMP"]) / ("pushed-" + version)).touch()
+else:
+    sys.exit("Unexpected publication command")
+''', encoding="utf-8")
+    stub.chmod(0o755)
+    for command in ("helm", "oras"):
+        (binaries / command).symlink_to(stub)
+    source_version = "0.0.0-sha." + "a" * 40
+    output = tmp_path / "output"
+    log = tmp_path / "commands.jsonl"
+    environment = {
+        **os.environ, **workflow["env"], **job["env"],
+        "CHART_PATH": str(CHART), "RUNNER_TEMP": str(tmp_path), "SCENARIO": scenario,
+        "COMMAND_LOG": str(log), "PATH": f"{Path(sys.executable).parent}:{binaries}:{os.environ['PATH']}",
+        "GITHUB_REF": "refs/tags/v1.2.3" if tagged else "refs/heads/main",
+        "SOURCE_COMMIT": "a" * 40, "SOURCE_CHART_VERSION": source_version,
+        "PACKAGE_VERSION": "1.2.3" if tagged else source_version,
+        "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", steps["Package and publish chart"]["run"]],
+        env=environment, check=False, capture_output=True, text=True,
+    )
+    succeeds = scenario in ("fresh", "same") or (scenario == "release-exists" and not tagged)
+    assert (result.returncode == 0) == succeeds, result.stdout + result.stderr
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    pushes = [command for command in commands if command[:2] == ["helm", "push"]]
+    aliases = [command for command in commands if command[:2] == ["oras", "tag"]]
+    assert len(aliases) == int(succeeds and not tagged)
+    if aliases:
+        assert aliases[0] == ["oras", "tag", f"{job['env']['CHART_OCI_REPOSITORY']}/{job['env']['CHART_NAME']}@sha256:" + "b" * 64, "main"]
+    if scenario in ("pull-error", "mismatch") and not tagged or scenario == "release-exists" and tagged:
+        assert not pushes
+    if not succeeds:
+        assert not output.exists()
+        return
+    assert len(pushes) == int(tagged) + int(scenario != "same")
+    expected_versions = (["1.2.3"] if tagged else []) + ([source_version] if scenario != "same" else [])
+    assert [Path(command[2]).name for command in pushes] == [
+        f"{job['env']['CHART_NAME']}-{version}.tgz" for version in expected_versions
+    ]
+    assert all(command[3] == f"oci://{job['env']['CHART_OCI_REPOSITORY']}" for command in pushes)
+    assert yaml.safe_load((tmp_path / "chart-source/Chart.yaml").read_text())["annotations"][
+        "org.opencontainers.image.revision"
+    ] == "a" * 40
+    assert not output.exists()
+    summary = (tmp_path / "summary.md").read_text()
+    assert f"Published immutable chart version: `{environment['PACKAGE_VERSION']}`" in summary
+    assert f"Source chart version: `{source_version}`" in summary
+    assert f"Source digest: `sha256:{'b' * 64}`" in summary
+
+
+def test_ci_has_no_release_manifest_pipeline():
+    workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
+    assert "release-manifest" not in workflow["jobs"]
+    publish_chart = workflow["jobs"]["publish-chart"]
+    assert "outputs" not in publish_chart
+    for step in publish_chart["steps"]:
+        assert "manifest" not in step["name"].lower()
+        assert not step.get("uses", "").startswith(("actions/upload-artifact@", "actions/download-artifact@"))
+        assert "id" not in step or step["id"] == "chart-version"
+    for obsolete in ("inference-platform-release-", "inference-release-manifest.json", "chart_digest:"):
+        assert obsolete not in WORKFLOW.read_text()
 
 
 class ChartTests(unittest.TestCase):
@@ -28,43 +387,31 @@ class ChartTests(unittest.TestCase):
         ])
         version_step = next(
             step for step in publish_job["steps"] if step.get("id") == "chart-version")
-        self.assertIn('${GITHUB_REF_NAME#v}', version_step["run"])
-        self.assertEqual(version_step["env"]["GITHUB_RUN_NUMBER"], "${{ github.run_number }}")
-        self.assertEqual(version_step["env"]["GITHUB_RUN_ATTEMPT"], "${{ github.run_attempt }}")
+        self.assertIn('${chart_version#v}', version_step["run"])
+        self.assertIn('${GITHUB_REF#refs/tags/}', version_step["run"])
         self.assertIn("0.0.0-sha.${GITHUB_SHA}", version_step["run"])
         self.assertIn("MAJOR.MINOR.PATCH", version_step["run"])
-        self.assertIn('echo "package_version=0.0.0-main"', version_step["run"])
         self.assertIn('echo "package_version=$chart_version"', version_step["run"])
         package_step = next(
             step for step in publish_job["steps"]
-            if step.get("name") == "Package and publish versioned inference charts")
+            if step["name"] == "Package and publish chart")
         self.assertIn("org.opencontainers.image.revision", package_step["run"])
         self.assertIn("Refusing to overwrite existing released chart version", package_step["run"])
-        self.assertIn('if [[ "$kind" == build ]]; then', package_step["run"])
+        self.assertIn('publish_chart "$SOURCE_CHART_VERSION" source', package_step["run"])
         self.assertIn('helm package "$chart_source" --version "$package_version"', package_step["run"])
-        self.assertIn('oras tag "ghcr.io/utopiklab/inference-platform/inference:$package_version" "$version"', package_step["run"])
+        self.assertIn('oras tag "$CHART_OCI_REPOSITORY/$CHART_NAME@$chart_digest" "$CHART_ALIAS"', package_step["run"])
         self.assertIn("Set up ORAS", [step.get("name") for step in publish_job["steps"]])
-        self.assertIn("inference-release-manifest.json", package_step["run"])
-        self.assertIn('"chartDigest": digest', package_step["run"])
-        self.assertIn('"chartVersion": version', package_step["run"])
-        self.assertIn('"images": {"inference":', package_step["run"])
-        manifest_artifact = next(
-            step for step in publish_job["steps"]
-            if step.get("uses") == "actions/upload-artifact@v4")
-        self.assertEqual(
-            manifest_artifact["with"]["name"],
-            "inference-platform-release-${{ github.sha }}",
-        )
         login_step = next(
             step for step in publish_job["steps"]
-            if step.get("name") == "Log in to GitHub Container Registry")
+            if step.get("name") == "Log in to GHCR")
         self.assertIn(
-            'oras login ghcr.io --username "$GHCR_USERNAME" --password-stdin',
+            'oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin',
             login_step["run"],
         )
         chart = yaml.safe_load((CHART / "Chart.yaml").read_text())
         self.assertEqual(chart["version"], "0.0.0")
         self.assertEqual(chart["annotations"]["org.opencontainers.image.revision"], "")
+        self.assertIn('chart_version="$source_version"', version_step["run"])
 
     def render(self, namespace=True, pv=False, extra=(), release_namespace="inference", values=None):
         command = [
