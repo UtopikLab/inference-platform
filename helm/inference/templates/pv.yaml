@@ -19,6 +19,9 @@ spec:
     - ReadWriteOnce
   storageClassName: {{ $pvc.storageClassName | default "" | quote }}
   persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    namespace: {{ .Release.Namespace }}
+    name: {{ $pvc.name }}
   nodeAffinity:
     required:
       nodeSelectorTerms:

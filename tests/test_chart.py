@@ -649,7 +649,7 @@ class ChartTests(unittest.TestCase):
                 self.assertEqual(ingress["spec"]["tls"][0]["secretName"], "models-tls")
 
     def test_local_pv_uses_alternative_environment_values(self):
-        resources = self.render(pv=True, extra=(
+        resources = self.render(pv=True, release_namespace="tenant-models", extra=(
             "--set", "inference.pv.nodeName=worker-b",
             "--set", "inference.pv.path=/srv/model-cache",
             "--set", "inference.pv.name=alternate-model-disk",
@@ -666,6 +666,9 @@ class ChartTests(unittest.TestCase):
         claim = next(resource for resource in resources if resource["kind"] == "PersistentVolumeClaim")
         self.assertEqual(volume["metadata"]["name"], "alternate-model-disk")
         self.assertEqual(claim["metadata"]["name"], "alternate-model-claim")
+        self.assertEqual(volume["spec"]["claimRef"], {
+            "namespace": "tenant-models", "name": "alternate-model-claim",
+        })
         self.assertEqual(claim["spec"]["volumeName"], "alternate-model-disk")
         self.assertEqual(claim["spec"]["storageClassName"], "local-retained")
         self.assertEqual(volume["spec"]["storageClassName"], "local-retained")
@@ -690,6 +693,9 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(volume["spec"]["storageClassName"], "")
         self.assertEqual(claim["spec"]["storageClassName"], "")
         self.assertEqual(claim["spec"]["volumeName"], volume["metadata"]["name"])
+        self.assertEqual(volume["spec"]["claimRef"], {
+            "namespace": "inference", "name": claim["metadata"]["name"],
+        })
 
     def test_schema_rejects_invalid_ownership_and_storage_values(self):
         for setting in (
