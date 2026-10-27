@@ -10,7 +10,7 @@ metadata:
     app: {{ .Chart.Name }}
     component: {{ .Release.Name }}
     app.kubernetes.io/component: inference-models
-    app.k8s.io/managed-by: Helm
+    app.kubernetes.io/managed-by: Helm
 spec:
   capacity:
     storage: {{ $pvc.storage | quote }}
