@@ -529,6 +529,8 @@ class ChartTests(unittest.TestCase):
             self.assertEqual(service_port["targetPort"], container["ports"][0]["name"])
             self.assertEqual(services[name]["spec"]["selector"],
                              rendered["spec"]["selector"]["matchLabels"])
+            self.assertTrue(rendered["spec"]["selector"]["matchLabels"].items() <=
+                            rendered["spec"]["template"]["metadata"]["labels"].items())
             self.assertEqual(hpas[name]["spec"]["minReplicas"], rendered["spec"]["replicas"])
             self.assertEqual(hpas[name]["spec"]["maxReplicas"], rendered["spec"]["replicas"])
             self.assertNotIn("imagePullSecrets", pod)
