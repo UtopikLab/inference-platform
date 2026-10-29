@@ -31,6 +31,8 @@ metadata:
     inference.profile: {{ $cfg.name | quote }}
 spec:
   replicas: {{ $cfg.replicas }}
+  # Two exclusive GPUs / two roles: release this role's GPU before replacement.
+  # Initial migration from unreserved pods still requires a coordinated stop.
   strategy:
     type: Recreate
   selector:

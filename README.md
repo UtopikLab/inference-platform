@@ -6,7 +6,7 @@ runtime; it does not maintain a forked inference image.
 
 - Helm chart: `helm/inference/`
 - Application components: the
-	[code-factory repository](https://github.com/UtopikPrompt/code-factory)
+	[codefactory repository](https://github.com/UtopikPrompt/codefactory)
 - Environment selection and deployment operations: the
 	[infra-codefactory repository](https://github.com/UtopikLab/infra-codefactory)
 
@@ -114,7 +114,7 @@ Helm release that previously managed cluster resources requires separate
 operator review of stored release manifests; new keep annotations do not
 retroactively protect older revisions from deletion.
 
-The default contains `coder` (two replicas) and `judge` (one replica), each with
+The default contains `coder` and `judge` (one replica each), each with
 its own Deployment, fixed-size HPA, and ClusterIP Service. `inference.servers`
 accepts a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
 `resources.requests`/`resources.limits`, and `service.port`. The model and server
@@ -125,10 +125,14 @@ container port, so the configured port stays coherent end to end. Profiles
 share the configured model PVC but retain separate native-download caches.
 `inference.imagePullSecrets` remains optional.
 
-Resource maps use Kubernetes resource names. The chart defaults request CPU and
-memory only; add a GPU key to both requests and limits only after confirming the
-resource name and quantity advertised by the target cluster. `nvidia.com/gpu`
-requests a generic NVIDIA GPU and cannot select a physical GPU model. Selecting
+Resource maps use Kubernetes resource names. Defaults request and limit one
+`nvidia.com/gpu` per profile, matching the verified two-GPU Dev target, without
+changing the existing CPU request of 1 or limit of 2. Generation and prompt
+threads are explicitly 2, with one server slot and a 32768-token context pool.
+The fixed HPA is 1–1 for each role. This requires an exclusive device-plugin
+configuration (no time-slicing or MPS sharing). Do not set
+`NVIDIA_VISIBLE_DEVICES=all` or override the plugin's assigned visibility.
+`nvidia.com/gpu` requests a generic NVIDIA GPU and cannot select a physical GPU model. Selecting
 different GPU models on one node requires cluster-advertised distinct resource
 names or custom device-plugin/device support; profile labels alone do not pin a
 physical device.
@@ -148,12 +152,16 @@ put issuer credentials in chart values. The chart does not assume public
 exposure or authentication. Legacy `entrypoints`, `middlewares`, and `method`
 values were ignored and are not supported.
 
-The infra Dev overlay configures the two profile workloads, the existing
-`inference-dev` namespace, and Code Factory's internal Service endpoints. It
-does not set a GPU resource class or enable Ingress. These source changes do not
+The infra Dev overlay configures the two exclusive one-GPU profile workloads,
+8GiB memory per pod, the existing `inference-dev` namespace, and Code Factory's
+unchanged internal Service endpoints. It does not enable Ingress. These source changes do not
 change chart publication/versioning or the reviewed artifact lock; publishing a
 new chart and updating the infra artifact lock remain separate gated follow-up
 work.
+
+See [the GPU/runtime contract and controlled migration prerequisites](docs/inference-gpu-contract.md).
+`Recreate` prevents replacement surge for each Deployment, but does **not** make
+the initial migration safe while legacy pods still use unreserved GPUs.
 
 Before rollout, publish from the chosen release tag through the existing gated
 publication process, verify the resulting OCI digest/version and exact render

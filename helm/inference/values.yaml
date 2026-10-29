@@ -39,11 +39,11 @@ inference:
   image: "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:1bacc872b168d2d10bfd8c220336f5a2cd464c07605936ec146ee5198832ffce"
   imagePullPolicy: Always
   imagePullSecrets: []
-  # Resource keys are Kubernetes resource names advertised by the target
-  # cluster. GPU resource names are intentionally not assumed here.
+  # One exclusive NVIDIA GPU per role; requires nvidia.com/gpu with no sharing.
+  # Let the device plugin assign visibility; do not override it with all GPUs.
   servers:
   - name: coder
-    replicas: 2
+    replicas: 1
     modelDir: /models
     modelArgs: []
     serverArgs:
@@ -51,15 +51,25 @@ inference:
     - "1"
     - --ctx-size
     - "32768"
+    - --parallel
+    - "1"
+    - --threads
+    - "2"
+    - --threads-batch
+    - "2"
+    - --gpu-layers
+    - all
     service:
       port: 8000
     resources:
       requests:
         cpu: "1"
         memory: "2Gi"
+        nvidia.com/gpu: 1
       limits:
         cpu: "2"
         memory: "2Gi"
+        nvidia.com/gpu: 1
   - name: judge
     replicas: 1
     modelDir: /models
@@ -69,15 +79,25 @@ inference:
     - "1"
     - --ctx-size
     - "32768"
+    - --parallel
+    - "1"
+    - --threads
+    - "2"
+    - --threads-batch
+    - "2"
+    - --gpu-layers
+    - all
     service:
       port: 8000
     resources:
       requests:
         cpu: "1"
         memory: "2Gi"
+        nvidia.com/gpu: 1
       limits:
         cpu: "2"
         memory: "2Gi"
+        nvidia.com/gpu: 1
   ingress:
     enabled: false
     routes: []

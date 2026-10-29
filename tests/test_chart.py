@@ -508,7 +508,7 @@ class ChartTests(unittest.TestCase):
         deployments = {resource["metadata"]["name"]: resource for resource in resources
                        if resource["kind"] == "Deployment"}
         self.assertEqual(set(deployments), {"coder", "judge"})
-        self.assertEqual(deployments["coder"]["spec"]["replicas"], 2)
+        self.assertEqual(deployments["coder"]["spec"]["replicas"], 1)
         self.assertEqual(deployments["judge"]["spec"]["replicas"], 1)
         services = {resource["metadata"]["name"]: resource for resource in resources
                     if resource["kind"] == "Service"}
@@ -517,13 +517,27 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(set(services), set(deployments))
         self.assertEqual(set(hpas), set(deployments))
         for name, rendered in deployments.items():
+            self.assertEqual(rendered["spec"]["strategy"], {"type": "Recreate"})
             pod = rendered["spec"]["template"]["spec"]
             volume = next(volume for volume in pod["volumes"] if "persistentVolumeClaim" in volume)
             self.assertEqual(volume["persistentVolumeClaim"]["claimName"], "inference-models")
             container = pod["containers"][0]
             self.assertIn({"name": "LLAMA_CACHE", "value": f"/models/llama.cpp/{name}"}, container["env"])
             self.assertIn({"name": "models", "mountPath": "/models"}, container["volumeMounts"])
-            self.assertIn("--ctx-size", container["args"])
+            self.assertEqual(container["args"], [
+                "--host", "0.0.0.0", "--port", "8000",
+                "--models-max", "1", "--ctx-size", "32768", "--parallel", "1",
+                "--threads", "2", "--threads-batch", "2", "--gpu-layers", "all",
+            ])
+            self.assertEqual(container["env"], [
+                {"name": "LLAMA_CACHE", "value": f"/models/llama.cpp/{name}"},
+            ])
+            self.assertEqual(container["resources"]["requests"], {
+                "cpu": "1", "memory": "2Gi", "nvidia.com/gpu": 1,
+            })
+            self.assertEqual(container["resources"]["limits"], {
+                "cpu": "2", "memory": "2Gi", "nvidia.com/gpu": 1,
+            })
             service_port = services[name]["spec"]["ports"][0]
             self.assertEqual(container["ports"][0]["containerPort"], service_port["port"])
             self.assertEqual(service_port["targetPort"], container["ports"][0]["name"])
