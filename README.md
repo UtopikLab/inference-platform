@@ -114,8 +114,10 @@ Helm release that previously managed cluster resources requires separate
 operator review of stored release manifests; new keep annotations do not
 retroactively protect older revisions from deletion.
 
-The default contains `coder` and `judge` (one replica each), each with
-its own Deployment, fixed-size HPA, and ClusterIP Service. `inference.servers`
+The default contains the GPU-backed `coder` and `worker` profiles (one replica
+each), each with its own Deployment, fixed-size HPA, and ClusterIP Service.
+UtopikLab configures the separate CPU review judge as `inference-judge-cpu`.
+`inference.servers`
 accepts a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
 `resources.requests`/`resources.limits`, and `service.port`. The model and server
 argument arrays are passed to `llama-server` as individual arguments. The chart

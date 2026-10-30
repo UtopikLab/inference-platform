@@ -507,9 +507,9 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(claim["spec"]["resources"]["requests"]["storage"], "1Gi")
         deployments = {resource["metadata"]["name"]: resource for resource in resources
                        if resource["kind"] == "Deployment"}
-        self.assertEqual(set(deployments), {"coder", "judge"})
+        self.assertEqual(set(deployments), {"coder", "worker"})
         self.assertEqual(deployments["coder"]["spec"]["replicas"], 1)
-        self.assertEqual(deployments["judge"]["spec"]["replicas"], 1)
+        self.assertEqual(deployments["worker"]["spec"]["replicas"], 1)
         services = {resource["metadata"]["name"]: resource for resource in resources
                     if resource["kind"] == "Service"}
         hpas = {resource["metadata"]["name"]: resource for resource in resources
@@ -559,8 +559,8 @@ class ChartTests(unittest.TestCase):
             "--set", "inference.ingress.routes[0].path=/coder",
             "--set", "inference.ingress.routes[0].profile=coder",
             "--set", "inference.ingress.routes[1].host=models.example.test",
-            "--set", "inference.ingress.routes[1].path=/judge",
-            "--set", "inference.ingress.routes[1].profile=judge",
+            "--set", "inference.ingress.routes[1].path=/worker",
+            "--set", "inference.ingress.routes[1].profile=worker",
         ), release_namespace="alternate-inference")
         deployment = next(resource for resource in resources
                           if resource["kind"] == "Deployment" and resource["metadata"]["name"] == "coder")
@@ -577,10 +577,11 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(ingress["metadata"]["namespace"], "alternate-inference")
         self.assertEqual(ingress["spec"]["rules"][0]["host"], "models.example.test")
         paths = ingress["spec"]["rules"][0]["http"]["paths"]
-        self.assertEqual({path["path"] for path in paths}, {"/coder", "/judge"})
-        self.assertEqual({path["backend"]["service"]["name"] for path in paths}, {"coder", "judge"})
+        self.assertEqual({path["path"] for path in paths}, {"/coder", "/worker"})
+        self.assertEqual({path["backend"]["service"]["name"] for path in paths}, {"coder", "worker"})
         self.assertEqual(next(path for path in paths if path["path"] == "/coder")
                          ["backend"]["service"]["port"]["number"], 8100)
+
 
     def test_profiles_reject_duplicate_names_and_listener_argument_overrides(self):
         values = yaml.safe_load((CHART / "values.yaml").read_text())
