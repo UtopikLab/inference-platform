@@ -119,7 +119,9 @@ each), each with its own Deployment, fixed-size HPA, and ClusterIP Service.
 UtopikLab configures the separate CPU review judge as `inference-judge-cpu`.
 `inference.servers`
 accepts a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
-`resources.requests`/`resources.limits`, and `service.port`. The model and server
+`nodeSelector`, `resources.requests`/`resources.limits`, and `service.port`.
+`nodeSelector` is an optional per-profile map of node-label keys to string
+values; it selects a hardware class, not an individual GPU. The model and server
 argument arrays are passed to `llama-server` as individual arguments. The chart
 adds `--host 0.0.0.0` and `--port` from `service.port`; do not add `--host` or
 `--port` in either argument array. Probes and the Service target the named HTTP

@@ -519,6 +519,7 @@ class ChartTests(unittest.TestCase):
         for name, rendered in deployments.items():
             self.assertEqual(rendered["spec"]["strategy"], {"type": "Recreate"})
             pod = rendered["spec"]["template"]["spec"]
+            self.assertNotIn("nodeSelector", pod)
             volume = next(volume for volume in pod["volumes"] if "persistentVolumeClaim" in volume)
             self.assertEqual(volume["persistentVolumeClaim"]["claimName"], "inference-models")
             container = pod["containers"][0]
@@ -548,6 +549,31 @@ class ChartTests(unittest.TestCase):
             self.assertEqual(hpas[name]["spec"]["minReplicas"], rendered["spec"]["replicas"])
             self.assertEqual(hpas[name]["spec"]["maxReplicas"], rendered["spec"]["replicas"])
             self.assertNotIn("imagePullSecrets", pod)
+
+    def test_server_node_selectors_are_independent_and_optional(self):
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values["inference"]["servers"][0]["nodeSelector"] = {
+            "nvidia.com/gpu.product": "Tesla-P40",
+        }
+        values["inference"]["servers"][1]["nodeSelector"] = {
+            "nodepool.example.test/class": "accelerated-b",
+        }
+        resources = self.render(values=values, namespace=False, pv=False)
+        deployments = {resource["metadata"]["name"]: resource for resource in resources
+                       if resource["kind"] == "Deployment"}
+        self.assertEqual(
+            deployments["coder"]["spec"]["template"]["spec"]["nodeSelector"],
+            {"nvidia.com/gpu.product": "Tesla-P40"},
+        )
+        self.assertEqual(
+            deployments["worker"]["spec"]["template"]["spec"]["nodeSelector"],
+            {"nodepool.example.test/class": "accelerated-b"},
+        )
+
+        values["inference"]["servers"][0]["nodeSelector"] = {"invalid": True}
+        with self.assertRaises(subprocess.CalledProcessError) as error:
+            self.render(values=values)
+        self.assertIn("schema", error.exception.stderr)
 
     def test_profile_ports_drive_listener_service_probes_and_ingress_backend(self):
         values = yaml.safe_load((CHART / "values.yaml").read_text())

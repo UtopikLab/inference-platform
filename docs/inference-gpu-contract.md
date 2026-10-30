@@ -13,6 +13,14 @@ policy the pods get distinct devices, not a promised physical ordinal. Neither
 profile names nor Kubernetes GPU requests mean “coder gets GPU 0”. No CUDA or
 NVIDIA visibility override is added; the plugin assigns the device.
 
+Both GPU profiles select the node class with
+`nvidia.com/gpu.product=Tesla-P40`. A read-only query of node metadata in
+context `default` returned that exact label on `k8s-node01` on 2026-10-30.
+This selects a matching node, not a physical GPU index; the device plugin may
+assign either available card. The chart consumes this existing label but does
+not create it or assume a particular label publisher, including GPU Feature
+Discovery. Keep the label accurate on every eligible node.
+
 CPU requests/limits remain 1/2. Generation and batch/prompt threads are both 2;
 these are inference-pool sizes, not a promise that the router and all auxiliary
 threads total two. Memory stays **8GiB in Dev** (generic chart default: 2GiB).

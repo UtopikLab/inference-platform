@@ -18,6 +18,13 @@ nvidia-device-plugin:
   # The chart enforces a guard against the 'default' namespace; set true so the
   # chart renders when this parent chart is templated/installed in 'default'.
   allowDefaultNamespace: true
+  # Configure the device plugin to use hardware UUIDs
+  # config:
+  #   map:
+  #     default: |-
+  #       version: v1
+  #       flags:
+  #         deviceIDStrategy: "uuid"
   # Namespace-scoped dependency resources use the release namespace. If set,
   # namespaceOverride must match it; routine deployments disable this plugin.
   securityContext:
