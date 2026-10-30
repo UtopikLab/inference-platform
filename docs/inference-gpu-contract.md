@@ -1,33 +1,21 @@
-# Exclusive inference roles and pinned runtime contract
+# GPU and runtime contract
 
-Source-only configuration; publication, deployment, restarts, inference,
-benchmarks, model downloads, and host changes are not part of this change.
+The chart renders only the llama.cpp profiles supplied by the consuming
+environment. It does not install or configure NVIDIA drivers, the NVIDIA
+device plugin, node labels, or GPU sharing policy. Those are cluster
+prerequisites managed independently from an inference release.
 
-## Desired configuration
+Profiles that request `nvidia.com/gpu` require that resource to be advertised
+by the cluster and an allocation policy suitable for the workload. A
+`nodeSelector` selects labeled nodes; neither profile names nor resource
+requests select a physical GPU ordinal. The device plugin controls container
+device visibility. Do not override that assignment with
+`NVIDIA_VISIBLE_DEVICES=all`.
 
-The chart defaults and UtopikLab Dev overlay have one coder and one judge/planner
-replica, each requesting **and** limiting `nvidia.com/gpu: 1`. Each HPA is fixed
-at 1–1. The supplied target assessment confirmed two allocatable P40 GPUs and
-an NVIDIA device plugin without time-slicing. Under that exclusive allocation
-policy the pods get distinct devices, not a promised physical ordinal. Neither
-profile names nor Kubernetes GPU requests mean “coder gets GPU 0”. No CUDA or
-NVIDIA visibility override is added; the plugin assigns the device.
-
-Both GPU profiles select the node class with
-`nvidia.com/gpu.product=Tesla-P40`. A read-only query of node metadata in
-context `default` returned that exact label on `k8s-node01` on 2026-10-30.
-This selects a matching node, not a physical GPU index; the device plugin may
-assign either available card. The chart consumes this existing label but does
-not create it or assume a particular label publisher, including GPU Feature
-Discovery. Keep the label accurate on every eligible node.
-
-CPU requests/limits remain 1/2. Generation and batch/prompt threads are both 2;
-these are inference-pool sizes, not a promise that the router and all auxiliary
-threads total two. Memory stays **8GiB in Dev** (generic chart default: 2GiB).
-The selected model remains
-`Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M`, supplied by existing requesters,
-not eagerly loaded by the chart. No model argument, download, cache layout,
-autoload policy, listener, Service, probe or model-selection change is made.
+CPU/memory resources, replicas, arguments, storage, and node selection are
+per-profile values. `service.port` configures the llama-server listener, probes,
+Service, and optional Ingress backend together. Model selection and downloads
+remain runtime/API concerns rather than organization defaults in the chart.
 
 ## Runtime support evidence (read-only source inspection, 2026-10-29)
 
@@ -58,58 +46,51 @@ CUDA 12.8.90. The following **exact commit**, not upstream main, was inspected:
 - [`tools/server/README.md:1972–1978`](https://github.com/ggml-org/llama.cpp/blob/339f3242c/tools/server/README.md#using-multiple-models)
   documents passing default model-instance arguments via the router CLI.
 
-Thus both profiles pass:
+For a profile configured with these arguments:
 
 ```text
 --models-max 1 --ctx-size 32768 --parallel 1 --threads 2 --threads-batch 2 --gpu-layers all
 ```
 
 `--models-max 1` caps resident models in the router; it is **not** concurrency.
-`--parallel 1` selects one model-server slot for the existing sequential
-workload and the 32768 context pool, rather than four slots sharing that pool.
+`--parallel 1` selects one model-server slot and its configured context pool.
 Full GPU-layer offload uses only the plugin-assigned visible GPU. This is not a
 claim that every computation executes on GPU. No KV precision, batch precision,
 flash-attention, fit-policy or performance-gain tuning is introduced.
 
 This evidence establishes supported syntax and source-level forwarding, not
-live child arguments or measured single-P40 peak memory. Those remain rollout
+live child arguments or measured peak GPU memory. Those remain rollout
 verification gates. Do not silently reduce context, change quantization, or
 fall back to shared GPUs if memory validation fails.
 
 ## Rollout and rollback prerequisites — separately authorized maintenance only
 
 1. Review/publish the changed chart through the normal gated process, then
-   validate the **actual published artifact** with the exact Dev overlay and
-   schema. The currently configured `0.0.0-dev` reference is not proof of
-   source/package equivalence or publisher provenance.
-2. Verify context `default`, release `inference`, namespace `inference-dev`,
-   runner permissions, stored release manifests, namespace/release ownership,
-   PV/PVC binding and retention, Secret references (never values), pinned image,
-   two allocatable exclusive GPUs and absence of competing/unreserved users.
-   Do not reinstall/adopt the existing device plugin or retained storage.
-3. Reserve a maintenance window and quiesce callers for **both** roles.
-   Existing old pods have no GPU reservations and can see/use both devices.
-   New resource requests cannot protect against them. A reviewed procedure
-   must suspend autoscaler/other reconciliation that would undo a stop, then
-   stop **all old coder and judge pods and their model processes before any
-   new pod starts**. Merely upgrading with `Recreate`, scaling one role at a
-   time, or scaling to zero while a 1–1 HPA remains active is insufficient.
-   No such live transition is authorized here.
-4. Only after the all-stopped barrier, start the two new roles under exclusive
-   GPU allocation. `Recreate` is retained to avoid a third pod waiting forever
-   for a surge GPU on subsequent upgrades. It serializes replacement within
-   each Deployment, not across the whole release; downtime is expected.
-5. Use bounded readiness waits (existing deployment tooling: 5m). Report coder
-   and judge separately. Verify assigned device UUIDs are distinct, no old
-   processes remain, actual model-child flags/threads/context/slots/offload,
-   health, endpoints, preserved caches, and the unchanged selected model.
-   A separately authorized representative workload must establish peak
-   single-P40 VRAM and 8GiB container-memory fit. Router `/health` alone does
-   not prove lazy-loaded model readiness.
-6. Preapprove rollback artifact/overlay, maintenance permissions, recovery
-   bounds and retained-model storage checks. Stop and inspect on failure.
-   No automatic rollback or storage mutation is authorized. A rollback to old
-   manifests without GPU requests/visibility isolation also needs an
-   all-stopped barrier; a blind `helm rollback` can reintroduce co-residence.
+   validate the **actual published artifact** with the intended values and
+   schema. A mutable development reference is not proof of source/package
+   equivalence or publisher provenance.
+2. Verify the selected cluster context, release and namespace, runner
+   permissions, existing ownership, stored release manifests, PV/PVC binding
+   and retention, Secret references (never values), and the pinned image.
+   Confirm NVIDIA drivers, device plugin, advertised GPU resources, allocation
+   policy, and available capacity independently for GPU-backed profiles.
+3. If replacing workloads that used GPUs without resource reservations, plan a
+   controlled stop of all affected pods and model processes before starting
+   replacements. New resource requests cannot protect against old unreserved
+   workloads. Suspend any reconciliation that would undo the stop; `Recreate`
+   alone does not provide a release-wide all-stopped barrier.
+4. Inspect stored manifests before removing resources formerly managed by the
+   inference release. In particular, changing plugin ownership can cause Helm
+   to remove cluster-scoped resources; do not adopt, remove, or reinstall a
+   separately managed plugin without an explicitly reviewed migration.
+5. Use bounded readiness waits. Verify actual model-child flags, threads,
+   context, slots and offload; health, endpoints, preserved caches, assigned
+   devices, and representative memory fit. Router `/health` alone does not
+   prove lazy-loaded model readiness.
+6. Preapprove rollback artifact/values, permissions, recovery bounds and
+   retained-storage checks. Stop and inspect on failure. No automatic rollback
+   or storage mutation is implied. A rollback that restores unreserved GPU
+   workloads also requires a controlled stop to prevent GPU co-residence.
 
-No live readiness, throughput, VRAM peak, or latency improvement is claimed.
+No live readiness, throughput, VRAM peak, or latency improvement is claimed by
+source renders or chart tests.

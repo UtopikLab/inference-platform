@@ -17,9 +17,6 @@ env:
   TEST_REQUIREMENTS_FORMAT: requirements-test.txt
   CHART_PATH: helm/inference
   CHART_RELEASE: inference
-  CHART_DEPENDENCIES: "true"
-  CHART_REPOSITORY_NAME: nvidia
-  CHART_REPOSITORY_URL: https://nvidia.github.io/k8s-device-plugin
   CHART_STRICT: "true"
   CHART_VALUES_FILE: ""
   CHART_SET_VALUES: ""
@@ -64,14 +61,6 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
-
-      - name: Prepare Helm dependencies
-        shell: bash
-        run: |
-          if [[ "$CHART_DEPENDENCIES" == true ]]; then
-            helm repo add "$CHART_REPOSITORY_NAME" "$CHART_REPOSITORY_URL"
-            helm dependency build "$CHART_PATH"
-          fi
 
       - name: Install dependencies
         env:
@@ -166,14 +155,6 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Prepare Helm dependencies
-        shell: bash
-        run: |
-          if [[ "$CHART_DEPENDENCIES" == true ]]; then
-            helm repo add "$CHART_REPOSITORY_NAME" "$CHART_REPOSITORY_URL"
-            helm dependency build "$CHART_PATH"
-          fi
-
       - name: Lint and render Helm chart
         shell: bash
         run: |
@@ -246,14 +227,6 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
-
-      - name: Prepare Helm dependencies
-        shell: bash
-        run: |
-          if [[ "$CHART_DEPENDENCIES" == true ]]; then
-            helm repo add "$CHART_REPOSITORY_NAME" "$CHART_REPOSITORY_URL"
-            helm dependency build "$CHART_PATH"
-          fi
 
       - name: Set up ORAS
         uses: oras-project/setup-oras@v1

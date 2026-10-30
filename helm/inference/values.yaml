@@ -5,106 +5,15 @@
 namespaces:
   create: true
 
-# Default image registry.
-global:
-  IMAGE_REGISTRY: "ghcr.io"
-
 # ---------------------------------------------------------------------------
-# Inference servers (namespace selected by Helm release).
+# Inference workload configuration is supplied by the consuming environment.
 # ---------------------------------------------------------------------------
-# The NVIDIA device-plugin chart is a sub-chart, gated by this flag.
-nvidia-device-plugin:
-  enabled: true
-  # The chart enforces a guard against the 'default' namespace; set true so the
-  # chart renders when this parent chart is templated/installed in 'default'.
-  allowDefaultNamespace: true
-  # Configure the device plugin to use hardware UUIDs
-  # config:
-  #   map:
-  #     default: |-
-  #       version: v1
-  #       flags:
-  #         deviceIDStrategy: "uuid"
-  # Namespace-scoped dependency resources use the release namespace. If set,
-  # namespaceOverride must match it; routine deployments disable this plugin.
-  securityContext:
-    privileged: true
-    allowPrivilegeEscalation: true
-    readOnlyRootFilesystem: null
-    runAsNonRoot: null
-    runAsUser: null
-    runAsGroup: null
-    capabilities:
-      add: []
-      drop: []
-    seLinuxOptions: {}
-    seccompProfile: null
-
 inference:
   # Model-free native router; requesters select and download HF models via /models.
   # Official CUDA image b11783, registry manifest verified 2026-10-21.
   image: "ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:1bacc872b168d2d10bfd8c220336f5a2cd464c07605936ec146ee5198832ffce"
   imagePullPolicy: Always
   imagePullSecrets: []
-  # One exclusive NVIDIA GPU per role; requires nvidia.com/gpu with no sharing.
-  # Let the device plugin assign visibility; do not override it with all GPUs.
-  servers:
-  - name: coder
-    replicas: 1
-    modelDir: /models
-    modelArgs: []
-    serverArgs:
-    - --models-max
-    - "1"
-    - --ctx-size
-    - "32768"
-    - --parallel
-    - "1"
-    - --threads
-    - "2"
-    - --threads-batch
-    - "2"
-    - --gpu-layers
-    - all
-    service:
-      port: 8000
-    resources:
-      requests:
-        cpu: "1"
-        memory: "2Gi"
-        nvidia.com/gpu: 1
-      limits:
-        cpu: "2"
-        memory: "2Gi"
-        nvidia.com/gpu: 1
-  - name: worker
-    replicas: 1
-    modelDir: /models
-    modelArgs: []
-    serverArgs:
-    - --models-max
-    - "1"
-    - --ctx-size
-    - "32768"
-    - --parallel
-    - "1"
-    - --threads
-    - "2"
-    - --threads-batch
-    - "2"
-    - --gpu-layers
-    - all
-    service:
-      port: 8000
-    resources:
-      requests:
-        cpu: "1"
-        memory: "2Gi"
-        nvidia.com/gpu: 1
-      limits:
-        cpu: "2"
-        memory: "2Gi"
-        nvidia.com/gpu: 1
   ingress:
     enabled: false
     routes: []

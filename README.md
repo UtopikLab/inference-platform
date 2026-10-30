@@ -1,27 +1,21 @@
 # inference-platform
 
-Inference deployment source for the Code Factory system. This repository owns
-the `inference` Helm chart and its integration with the upstream llama.cpp
-runtime; it does not maintain a forked inference image.
-
-- Helm chart: `helm/inference/`
-- Application components: the
-	[codefactory repository](https://github.com/UtopikPrompt/codefactory)
-- Environment selection and deployment operations: the
-	[infra-codefactory repository](https://github.com/UtopikLab/infra-codefactory)
+This repository packages the `inference` Helm chart for the upstream llama.cpp
+server runtime. It does not maintain a forked inference image or choose an
+organization's roles, cluster, namespace, storage, or hardware topology.
+Consuming deployment configuration supplies those values; infrastructure
+automation owns environment selection and release operations.
 
 Chart publication and cluster deployment are separate, gated steps.
 
-The optional chart-publish job pushes `inference` to
-`oci://ghcr.io/utopiklab/inference-platform`, which produces the package
-`ghcr.io/utopiklab/inference-platform/inference`. Both product repositories use
-the same chart publication policy: lint, tests, and chart validation must succeed,
+The optional chart-publish job publishes `inference` to its configured OCI
+registry. A consuming infrastructure configuration selects the repository and
+exact version. Lint, tests, and chart validation must succeed,
 the event must be `push` or `workflow_dispatch` on main or a version tag, and the
 repository Actions variable `HELM_CHART_PUBLISH_ENABLED` must be exactly `true`.
 Tags must be exact SemVer versions with an optional leading `v`; prerelease
 identifiers follow SemVer and numeric identifiers cannot have leading zeroes.
-The infra Dev profile pins the
-exact prerelease version `0.0.0-dev`, distinct from the mutable OCI `dev` alias.
+The development version `0.0.0-dev` is distinct from the mutable OCI `dev` alias.
 Each eligible main publication publishes the valid SemVer `0.0.0-sha.<full-commit>`,
 replaces the mutable development package `0.0.0-dev`, and moves `dev` to the
 verified source digest. Tag releases never move `dev`.
@@ -32,52 +26,41 @@ version is reused only when its annotation matches, otherwise publication
 fails. The source commit and registry digest are verified before publishing
 `0.0.0-dev`, updating the `dev` alias, or reporting successful publication.
 The development package has its own version and digest; `dev` aliases the
-commit-addressed source package. Infra consumes the OCI chart
-repository and exact version configured for the environment, using
-`helm pull --version`, and fails if it is absent; it never falls back to a mutable
+commit-addressed source package. Consumers use `helm pull --version` for the
+configured exact version and must not fall back to a mutable
 `dev` or `latest` alias. Product release-manifest JSON and intermediate
-chart/image manifest artifacts are no longer generated. Code Factory's image
-publication remains main-only; its tag runs publish charts only.
+chart/image manifest artifacts are not generated.
 The checked-in `helm/inference/Chart.yaml` version is only a valid placeholder;
 the workflow supplies the package version. Pull requests remain
 validation-only. The runtime image pin is unchanged.
 
-The workflow does not set package visibility. GitHub's read-only package
-metadata does not expose UtopikLab's package-creation visibility default, so
-assume a newly created package may be private. Verify the desired visibility
-for the UtopikLab-owned package in GitHub before enabling the publish variable.
-The infra resolution workflow also needs read access to this package; a private
-package requires separately configured access there.
+The workflow does not set package visibility. Verify the desired visibility
+and ensure consuming infrastructure has read access before enabling publication.
 
 ## Storage and Ownership in 0.2.0
 
-Defaults preserve Namespace creation and the enabled NVIDIA dependency, but
-local PV creation is now disabled. Environment overlays own node names, physical
-paths, capacity, storage class/binding, routing and hardware topology.
+The chart creates a Namespace by default, but local PV creation is disabled.
+Consuming values own node names, physical paths, capacity, storage
+class/binding, routing, server profiles, and hardware topology.
 `namespaces.create` and `inference.pv.create` independently control Namespace
-and PV management. Routine deployment sets both to `false`; the NVIDIA
-device-plugin remains enabled by default. Helm's
+and PV management. Helm's
 `--namespace` selects the namespace for every namespaced resource. There is no
 top-level `namespace` chart value. The Namespace template also uses
-`.Release.Namespace`. The locked NVIDIA dependency follows that namespace;
-its namespace-local resources use that namespace and `namespaceOverride`, when
-set, must match it. The dependency also renders cluster-scoped RBAC and
-privileged DaemonSets, so deployment requires the corresponding cluster
-permissions and NVIDIA driver/runtime support on GPU nodes.
+`.Release.Namespace`.
 
-Infra keeps `namespaces.create: false`: deployment operators must preprovision
-the selected namespace separately. Routine Helm deployment does not use
-`--create-namespace` or adopt namespaces; it does install the enabled GPU
-plugin. Setting `namespaces.create: true` is a separate bootstrap choice, not
-routine deployment permission. No namespace or context is inferred from this
-chart's name.
+The chart does not infer a namespace or context from its name. Cluster access
+and namespace provisioning remain the consuming deployment's responsibility.
+The NVIDIA driver and device plugin are cluster prerequisites for profiles that
+request NVIDIA GPUs. They are intentionally not installed or owned by this
+workload chart and should be managed through the cluster's infrastructure
+process.
 
 The PVC is always rendered. Configured server profiles mount it, retaining
 `LLAMA_CACHE=/models/llama.cpp/<profile-name>`. It explicitly binds
 `inference.pvc.volumeName` when supplied; otherwise it binds the chart-created
 PV if enabled, or allows provisioning by the cluster. `inference.pvc.name`
-defaults to `inference-models`. The generic request is now `1Gi`, not `500Gi`;
-set the verified capacity in the environment overlay. `storageClassName: null`
+defaults to `inference-models`. The generic request is `1Gi`; set the verified
+capacity in the environment overlay. `storageClassName: null`
 omits the field to use the cluster default; `""` explicitly disables dynamic
 provisioning. Chart-created local PVs and their claims default to class `""`.
 PV and PVC have `helm.sh/resource-policy: keep`;
@@ -89,13 +72,12 @@ ownership or require a separately reviewed migration; do not force adoption.
 Local PV creation requires `inference.pv.nodeName` and an absolute
 `inference.pv.path`. `inference.pv.name` optionally overrides the claim name.
 Operator bootstrap is separate from the application release. To inspect only
-the operator definitions after building dependencies, use a verified infra
-values file (replace `ENVIRONMENT_VALUES` with its path):
+the namespace and PV definitions, use the reviewed deployment values file
+(replace `ENVIRONMENT_VALUES` with its path):
 
 ```sh
 helm template inference helm/inference --namespace inference \
 	--values "$ENVIRONMENT_VALUES" \
-	--set nvidia-device-plugin.enabled=false \
 	--set namespaces.create=true --set inference.pv.create=true \
 	--show-only templates/namespace.yaml --show-only templates/pv.yaml
 ```
@@ -104,21 +86,17 @@ This prints YAML only. Do not apply it over an existing PV or install a second
 Helm release to take ownership. Verify the existing Namespace and retained PV
 against the environment's recorded name, capacity, path, node affinity,
 access mode/class, and intended claim binding.
-The routine render omits Namespace/PV and includes the pinned plugin's
-ClusterRole, ClusterRoleBinding, and DaemonSets, which require cluster-scoped
-permissions and hostPath access. It does not render a CRD. A local PV's node
-affinity places its claim consumers.
+The application chart does not render cluster-scoped resources or host paths.
+A local PV's node affinity places its claim consumers.
 Preserve the model directory and per-GPU cache; do not resize, delete, recreate,
 or adopt the live PV as part of rollout. Switching off ownership in an existing
 Helm release that previously managed cluster resources requires separate
 operator review of stored release manifests; new keep annotations do not
 retroactively protect older revisions from deletion.
 
-The default contains the GPU-backed `coder` and `worker` profiles (one replica
-each), each with its own Deployment, fixed-size HPA, and ClusterIP Service.
-UtopikLab configures the separate CPU review judge as `inference-judge-cpu`.
-`inference.servers`
-accepts a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
+Each configured `inference.servers` profile has its own Deployment, fixed-size
+HPA, and ClusterIP Service. The chart provides no default server roles.
+Profiles accept a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
 `nodeSelector`, `resources.requests`/`resources.limits`, and `service.port`.
 `nodeSelector` is an optional per-profile map of node-label keys to string
 values; it selects a hardware class, not an individual GPU. The model and server
@@ -129,17 +107,14 @@ container port, so the configured port stays coherent end to end. Profiles
 share the configured model PVC but retain separate native-download caches.
 `inference.imagePullSecrets` remains optional.
 
-Resource maps use Kubernetes resource names. Defaults request and limit one
-`nvidia.com/gpu` per profile, matching the verified two-GPU Dev target, without
-changing the existing CPU request of 1 or limit of 2. Generation and prompt
-threads are explicitly 2, with one server slot and a 32768-token context pool.
-The fixed HPA is 1–1 for each role. This requires an exclusive device-plugin
-configuration (no time-slicing or MPS sharing). Do not set
+Resource maps use Kubernetes resource names and are supplied per profile.
+When a profile requests `nvidia.com/gpu`, the cluster must advertise that
+resource and provide exclusive device allocation appropriate to the workload.
+The device plugin assigns visible devices; do not set
 `NVIDIA_VISIBLE_DEVICES=all` or override the plugin's assigned visibility.
 `nvidia.com/gpu` requests a generic NVIDIA GPU and cannot select a physical GPU model. Selecting
-different GPU models on one node requires cluster-advertised distinct resource
-names or custom device-plugin/device support; profile labels alone do not pin a
-physical device.
+different GPU models requires cluster-advertised distinct resource names or
+device support; profile labels alone do not pin a physical device.
 
 Ingress remains disabled by default. To enable it, configure `routes` entries
 with `host`, `path`, and `profile` (the matching `inference.servers[].name`),
@@ -156,62 +131,19 @@ put issuer credentials in chart values. The chart does not assume public
 exposure or authentication. Legacy `entrypoints`, `middlewares`, and `method`
 values were ignored and are not supported.
 
-The infra Dev overlay configures the two exclusive one-GPU profile workloads,
-8GiB memory per pod, the existing `inference-dev` namespace, and Code Factory's
-unchanged internal Service endpoints. It does not enable Ingress. These source changes do not
-change chart publication/versioning or the reviewed artifact lock; publishing a
-new chart and updating the infra artifact lock remain separate gated follow-up
-work.
-
-See [the GPU/runtime contract and controlled migration prerequisites](docs/inference-gpu-contract.md).
-`Recreate` prevents replacement surge for each Deployment, but does **not** make
-the initial migration safe while legacy pods still use unreserved GPUs.
-
-Before rollout, publish from the chosen release tag through the existing gated
-publication process, verify the resulting OCI digest/version and exact render
-with the infra overlay, and commit that verified immutable pin in infra. Never substitute the old
-`0.1.0` digest or deploy this source directory from infra. GPU plugin, ingress
-controller/TLS, model storage, image-pull authentication, and dedicated runner
-authorization must be independently verified. No publication or provisioning
-has been performed by these source changes.
+See [the GPU/runtime contract and migration prerequisites](docs/inference-gpu-contract.md).
+`Recreate` avoids replacement surge for one profile, but rollout sequencing must
+account for available GPU capacity and any existing unreserved workloads.
 
 ## CI Pipeline
 
-Both product repositories use matching lint, Python test, Helm validation,
-optional chart publication, and CI summary jobs. The test jobs share the same
-step scripts, configured by a `slice` matrix dimension and repository-level
-test defaults. Jobs are named `test-<slice>`. Inference installs the root
-`requirements-test.txt` with no matrix overrides or service requirements;
-Code Factory derives directory paths and test requirements from every slice,
-including shared under `orchestrator/shared/`, without overrides. Both
-workflows install one requirements file per slice. Artifact names derive
-from the slice. Inference has one shared
-slice collecting the entire `tests/` directory with pytest and PyYAML; Code
-Factory has five isolated slices. Both matrices disable
-fail-fast. Tests include unittest cases and emit a JUnit report plus a GitHub
-job summary. The `python-test-results-shared` artifact is retained for 14 days, including failed
-test runs that produce a report. The final summary includes publication
-outcomes, even when jobs fail or are skipped.
-
-Both workflows use the same Helm dependency preparation and lint/render scripts.
-Workflow environment settings select locked dependency builds, strict lint,
-values files, render settings, and expected images. Inference builds its locked
-NVIDIA chart dependency before tests, validation, and packaging and uses strict
-lint. Code Factory validates its example values and renders with management
-enabled, checking all four service images.
-
-Inference uses the upstream digest-pinned runtime image and therefore
-has no container-build job. Code Factory additionally builds four services.
-Publication remains opt-in with the existing product-specific ref rules and
-coordinates. Source annotations, registry digest verification, and test-result
-artifacts are retained; deployment selects charts by exact version, without
-product release-manifest artifacts.
+CI runs Python lint, tests, strict Helm lint/render validation, and optional
+chart publication. The runtime image is upstream and digest-pinned, so this
+repository does not build a container image.
 
 ## Local Validation
 
 ```sh
-helm repo add nvidia https://nvidia.github.io/k8s-device-plugin
-helm dependency build helm/inference
 python3 -m pip install -r requirements-test.txt
 python3 -m pip install ruff
 ruff check tests/

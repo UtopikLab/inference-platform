@@ -15,6 +15,29 @@ CHART = ROOT / "helm/inference"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 
 
+def configured_values():
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    values["inference"]["servers"] = [
+        {
+            "name": name,
+            "replicas": 1,
+            "modelDir": "/models",
+            "modelArgs": [],
+            "serverArgs": [
+                "--models-max", "1", "--ctx-size", "32768", "--parallel", "1",
+                "--threads", "2", "--threads-batch", "2", "--gpu-layers", "all",
+            ],
+            "service": {"port": 8000},
+            "resources": {
+                "requests": {"cpu": "1", "memory": "2Gi", "nvidia.com/gpu": 1},
+                "limits": {"cpu": "2", "memory": "2Gi", "nvidia.com/gpu": 1},
+            },
+        }
+        for name in ("profile-a", "profile-b")
+    ]
+    return values
+
+
 @pytest.mark.parametrize("report_exists", [False, True])
 def test_ci_workflow_reporting(tmp_path, report_exists):
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
@@ -171,10 +194,10 @@ def test_ci_workflow_matrix_partition_and_dependencies(tmp_path):
 def test_ci_workflow_helm_configuration(tmp_path):
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
     jobs = workflow["jobs"]
-    prepare = [next(step["run"] for step in jobs[job]["steps"]
-                    if step["name"] == "Prepare Helm dependencies")
-               for job in ("test", "chart-validation", "publish-chart")]
-    assert len(set(prepare)) == 1
+    assert not any(
+        step.get("name") == "Prepare Helm dependencies"
+        for job in jobs.values() for step in job["steps"]
+    )
     binaries = tmp_path / "bin"
     binaries.mkdir()
     log = tmp_path / "commands.jsonl"
@@ -193,15 +216,12 @@ def test_ci_workflow_helm_configuration(tmp_path):
     }
     script = next(step["run"] for step in jobs["chart-validation"]["steps"]
                   if step["name"] == "Lint and render Helm chart")
-    for command in (prepare[0], script):
-        subprocess.run(
-            ["bash", "-e", "-o", "pipefail", "-c", command],
-            cwd=tmp_path, env=environment, check=True, capture_output=True, text=True,
-        )
+    subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", script],
+        cwd=tmp_path, env=environment, check=True, capture_output=True, text=True,
+    )
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     assert commands == [
-        ["repo", "add", "nvidia", "https://nvidia.github.io/k8s-device-plugin"],
-        ["dependency", "build", "helm/inference"],
         ["lint", "helm/inference", "--strict"],
         ["template", "inference", "helm/inference", "--namespace", "inference"],
     ]
@@ -423,24 +443,22 @@ class ChartTests(unittest.TestCase):
         self.assertIn('chart_version="0.0.0-dev"', version_step["run"])
 
     def render(self, namespace=True, pv=False, extra=(), release_namespace="inference", values=None):
+        if values is None:
+            values = configured_values()
         command = [
                 "helm", "template", "inference", str(CHART),
                 "--namespace", release_namespace,
-                "--set", "nvidia-device-plugin.enabled=false",
                 "--set", f"namespaces.create={str(namespace).lower()}",
                 "--set", f"inference.pv.create={str(pv).lower()}",
                 *extra,
             ]
-        if values is None:
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
-        else:
-            with tempfile.TemporaryDirectory() as directory:
-                values_path = Path(directory) / "values.yaml"
-                values_path.write_text(yaml.safe_dump(values), encoding="utf-8")
-                result = subprocess.run(
-                    [*command[:4], "--values", str(values_path), *command[4:]],
-                    check=True, capture_output=True, text=True,
-                )
+        with tempfile.TemporaryDirectory() as directory:
+            values_path = Path(directory) / "values.yaml"
+            values_path.write_text(yaml.safe_dump(values), encoding="utf-8")
+            result = subprocess.run(
+                [*command[:4], "--values", str(values_path), *command[4:]],
+                check=True, capture_output=True, text=True,
+            )
         return [resource for resource in yaml.safe_load_all(result.stdout) if resource]
 
     def test_namespace_resource_uses_release_namespace(self):
@@ -448,7 +466,7 @@ class ChartTests(unittest.TestCase):
             "--set", "inference.ingress.enabled=true",
             "--set", "inference.ingress.routes[0].host=models.example.test",
             "--set", "inference.ingress.routes[0].path=/v1",
-            "--set", "inference.ingress.routes[0].profile=coder",
+            "--set", "inference.ingress.routes[0].profile=profile-a",
         ))
         namespace = next(resource for resource in resources if resource["kind"] == "Namespace")
         self.assertEqual(namespace["metadata"]["name"], "tenant-models")
@@ -456,28 +474,29 @@ class ChartTests(unittest.TestCase):
             if resource["kind"] != "Namespace":
                 self.assertEqual(resource["metadata"]["namespace"], "tenant-models")
 
-    def test_device_plugin_uses_release_namespace_and_rejects_conflicting_override(self):
-        resources = self.render(release_namespace="tenant-models", extra=(
-            "--set", "nvidia-device-plugin.enabled=true",
-        ))
-        for resource in resources:
-            if "namespace" in resource["metadata"]:
-                self.assertEqual(resource["metadata"]["namespace"], "tenant-models")
-            for subject in resource.get("subjects", []):
-                if subject["kind"] == "ServiceAccount":
-                    self.assertEqual(subject["namespace"], "tenant-models")
-        with self.assertRaises(subprocess.CalledProcessError) as error:
-            self.render(release_namespace="tenant-models", extra=(
-                "--set", "nvidia-device-plugin.enabled=true",
-                "--set", "nvidia-device-plugin.namespaceOverride=other-models",
-            ))
-        self.assertIn("must match the release namespace", error.exception.stderr)
+    def test_defaults_do_not_select_workload_roles_or_install_cluster_addons(self):
+        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        schema = json.loads((CHART / "values.schema.json").read_text())
+        self.assertNotIn("servers", values["inference"])
+        self.assertNotIn("nvidia-device-plugin", values)
+        self.assertNotIn("nvidia-device-plugin", schema["properties"])
+        for key in ("secretRefs", "global", "IMAGE", "WORKER_IMAGE", "orchestrator"):
+            self.assertNotIn(key, schema["properties"])
+        subprocess.run(["helm", "lint", "--strict", str(CHART)], check=True)
+        rendered = subprocess.run(
+            ["helm", "template", "inference", str(CHART), "--namespace", "inference"],
+            check=True, capture_output=True, text=True,
+        )
+        resources = [resource for resource in yaml.safe_load_all(rendered.stdout) if resource]
+        self.assertEqual(
+            {resource["kind"] for resource in resources},
+            {"Namespace", "PersistentVolumeClaim"},
+        )
 
     def test_namespace_and_pv_switches_are_independent(self):
         values = yaml.safe_load((CHART / "values.yaml").read_text())
         self.assertTrue(values["namespaces"]["create"])
         self.assertFalse(values["inference"]["pv"]["create"])
-        self.assertTrue(values["nvidia-device-plugin"]["enabled"])
         for namespace in (False, True):
             for pv in (False, True):
                 with self.subTest(namespace=namespace, pv=pv):
@@ -507,9 +526,9 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(claim["spec"]["resources"]["requests"]["storage"], "1Gi")
         deployments = {resource["metadata"]["name"]: resource for resource in resources
                        if resource["kind"] == "Deployment"}
-        self.assertEqual(set(deployments), {"coder", "worker"})
-        self.assertEqual(deployments["coder"]["spec"]["replicas"], 1)
-        self.assertEqual(deployments["worker"]["spec"]["replicas"], 1)
+        self.assertEqual(set(deployments), {"profile-a", "profile-b"})
+        self.assertEqual(deployments["profile-a"]["spec"]["replicas"], 1)
+        self.assertEqual(deployments["profile-b"]["spec"]["replicas"], 1)
         services = {resource["metadata"]["name"]: resource for resource in resources
                     if resource["kind"] == "Service"}
         hpas = {resource["metadata"]["name"]: resource for resource in resources
@@ -551,9 +570,9 @@ class ChartTests(unittest.TestCase):
             self.assertNotIn("imagePullSecrets", pod)
 
     def test_server_node_selectors_are_independent_and_optional(self):
-        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values = configured_values()
         values["inference"]["servers"][0]["nodeSelector"] = {
-            "nvidia.com/gpu.product": "Tesla-P40",
+            "gpu.example.test/class": "accelerator-a",
         }
         values["inference"]["servers"][1]["nodeSelector"] = {
             "nodepool.example.test/class": "accelerated-b",
@@ -562,11 +581,11 @@ class ChartTests(unittest.TestCase):
         deployments = {resource["metadata"]["name"]: resource for resource in resources
                        if resource["kind"] == "Deployment"}
         self.assertEqual(
-            deployments["coder"]["spec"]["template"]["spec"]["nodeSelector"],
-            {"nvidia.com/gpu.product": "Tesla-P40"},
+            deployments["profile-a"]["spec"]["template"]["spec"]["nodeSelector"],
+            {"gpu.example.test/class": "accelerator-a"},
         )
         self.assertEqual(
-            deployments["worker"]["spec"]["template"]["spec"]["nodeSelector"],
+            deployments["profile-b"]["spec"]["template"]["spec"]["nodeSelector"],
             {"nodepool.example.test/class": "accelerated-b"},
         )
 
@@ -576,23 +595,27 @@ class ChartTests(unittest.TestCase):
         self.assertIn("schema", error.exception.stderr)
 
     def test_profile_ports_drive_listener_service_probes_and_ingress_backend(self):
-        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values = configured_values()
         values["inference"]["servers"][0]["service"]["port"] = 8100
         values["inference"]["servers"][0]["modelArgs"] = ["--model", "/models/test.gguf"]
         resources = self.render(values=values, extra=(
             "--set", "inference.ingress.enabled=true",
             "--set", "inference.ingress.routes[0].host=models.example.test",
-            "--set", "inference.ingress.routes[0].path=/coder",
-            "--set", "inference.ingress.routes[0].profile=coder",
+            "--set", "inference.ingress.routes[0].path=/profile-a",
+            "--set", "inference.ingress.routes[0].profile=profile-a",
             "--set", "inference.ingress.routes[1].host=models.example.test",
-            "--set", "inference.ingress.routes[1].path=/worker",
-            "--set", "inference.ingress.routes[1].profile=worker",
+            "--set", "inference.ingress.routes[1].path=/profile-b",
+            "--set", "inference.ingress.routes[1].profile=profile-b",
         ), release_namespace="alternate-inference")
-        deployment = next(resource for resource in resources
-                          if resource["kind"] == "Deployment" and resource["metadata"]["name"] == "coder")
+        deployment = next(
+            resource for resource in resources
+            if resource["kind"] == "Deployment" and resource["metadata"]["name"] == "profile-a"
+        )
         container = deployment["spec"]["template"]["spec"]["containers"][0]
-        service = next(resource for resource in resources
-                        if resource["kind"] == "Service" and resource["metadata"]["name"] == "coder")
+        service = next(
+            resource for resource in resources
+            if resource["kind"] == "Service" and resource["metadata"]["name"] == "profile-a"
+        )
         ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
         self.assertIn("8100", container["args"])
         self.assertIn("--model", container["args"])
@@ -603,20 +626,25 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(ingress["metadata"]["namespace"], "alternate-inference")
         self.assertEqual(ingress["spec"]["rules"][0]["host"], "models.example.test")
         paths = ingress["spec"]["rules"][0]["http"]["paths"]
-        self.assertEqual({path["path"] for path in paths}, {"/coder", "/worker"})
-        self.assertEqual({path["backend"]["service"]["name"] for path in paths}, {"coder", "worker"})
-        self.assertEqual(next(path for path in paths if path["path"] == "/coder")
-                         ["backend"]["service"]["port"]["number"], 8100)
+        self.assertEqual({path["path"] for path in paths}, {"/profile-a", "/profile-b"})
+        self.assertEqual(
+            {path["backend"]["service"]["name"] for path in paths}, {"profile-a", "profile-b"}
+        )
+        self.assertEqual(
+            next(path for path in paths if path["path"] == "/profile-a")
+            ["backend"]["service"]["port"]["number"],
+            8100,
+        )
 
 
     def test_profiles_reject_duplicate_names_and_listener_argument_overrides(self):
-        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values = configured_values()
         values["inference"]["servers"].append(dict(values["inference"]["servers"][0]))
         with self.assertRaises(subprocess.CalledProcessError) as duplicate:
             self.render(values=values)
         self.assertIn("profile names must be unique", duplicate.exception.stderr)
 
-        values = yaml.safe_load((CHART / "values.yaml").read_text())
+        values = configured_values()
         values["inference"]["servers"][0]["serverArgs"].append("--port")
         with self.assertRaises(subprocess.CalledProcessError) as listener_arg:
             self.render(values=values)
@@ -627,7 +655,7 @@ class ChartTests(unittest.TestCase):
             "--set", "inference.ingress.enabled=true",
             "--set", "inference.ingress.routes[0].host=models.example.test",
             "--set", "inference.ingress.routes[0].path=/api",
-            "--set", "inference.ingress.routes[0].profile=coder",
+            "--set", "inference.ingress.routes[0].profile=profile-a",
             "--set", "inference.ingress.className=example-controller",
         ), release_namespace="alternate-inference")
         ingress = next(resource for resource in resources if resource["kind"] == "Ingress")
@@ -643,7 +671,7 @@ class ChartTests(unittest.TestCase):
             "--set", "inference.ingress.enabled=true",
             "--set", "inference.ingress.routes[0].host=models.example.test",
             "--set", "inference.ingress.routes[0].path=/v1",
-            "--set", "inference.ingress.routes[0].profile=coder",
+            "--set", "inference.ingress.routes[0].profile=profile-a",
             "--set", "inference.ingress.className=nginx",
             "--set", "inference.ingress.tls[0].secretName=models-tls",
             "--set", "inference.ingress.tls[0].hosts[0]=models.example.test",
@@ -659,7 +687,7 @@ class ChartTests(unittest.TestCase):
                 "--set", "inference.ingress.enabled=true",
                 "--set", "inference.ingress.routes[0].host=models.example.test",
                 "--set", "inference.ingress.routes[0].path=/v1",
-                "--set", "inference.ingress.routes[0].profile=coder",
+                "--set", "inference.ingress.routes[0].profile=profile-a",
                 "--set", "inference.ingress.tls[0].secretName=models-tls",
                 "--set", "inference.ingress.tls[0].hosts[0]=other.example.test",
             ))
@@ -675,7 +703,7 @@ class ChartTests(unittest.TestCase):
                     "--set", "inference.ingress.enabled=true",
                     "--set", "inference.ingress.routes[0].host=models.example.test",
                     "--set", "inference.ingress.routes[0].path=/v1",
-                    "--set", "inference.ingress.routes[0].profile=coder",
+                    "--set", "inference.ingress.routes[0].profile=profile-a",
                     "--set", "inference.ingress.annotations.owner=platform",
                     "--set", "inference.ingress.certManager.enabled=true",
                     "--set", "inference.ingress.certManager.issuerName=letsencrypt-prod",

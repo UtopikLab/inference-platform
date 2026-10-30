@@ -1,9 +1,5 @@
 {{- $ns := .Release.Namespace -}}
 {{- $inf := .Values.inference -}}
-{{- $plugin := index .Values "nvidia-device-plugin" -}}
-{{- if and $plugin.enabled $plugin.namespaceOverride (ne $plugin.namespaceOverride .Release.Namespace) -}}
-{{- fail "nvidia-device-plugin.namespaceOverride must match the release namespace" -}}
-{{- end -}}
 {{- $profileNames := dict -}}
 {{- range $cfg := $inf.servers }}
 {{- if hasKey $profileNames $cfg.name }}
