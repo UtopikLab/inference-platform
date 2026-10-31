@@ -563,6 +563,7 @@ class ChartTests(unittest.TestCase):
             self.assertEqual(service_port["targetPort"], container["ports"][0]["name"])
             self.assertEqual(services[name]["spec"]["selector"],
                              rendered["spec"]["selector"]["matchLabels"])
+            self.assertEqual(services[name]["spec"]["sessionAffinity"], "ClientIP")
             self.assertTrue(rendered["spec"]["selector"]["matchLabels"].items() <=
                             rendered["spec"]["template"]["metadata"]["labels"].items())
             self.assertEqual(hpas[name]["spec"]["minReplicas"], rendered["spec"]["replicas"])

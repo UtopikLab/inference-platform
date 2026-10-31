@@ -96,6 +96,9 @@ retroactively protect older revisions from deletion.
 
 Each configured `inference.servers` profile has its own Deployment, fixed-size
 HPA, and ClusterIP Service. The chart provides no default server roles.
+Services use client-IP affinity so a caller's native model preparation and
+inference requests reach the same router process, whose model registry is
+process-local.
 Profiles accept a DNS-safe `name`, `replicas`, `modelDir`, `modelArgs`, `serverArgs`,
 `nodeSelector`, `resources.requests`/`resources.limits`, and `service.port`.
 `nodeSelector` is an optional per-profile map of node-label keys to string

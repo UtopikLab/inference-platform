@@ -12,6 +12,7 @@ metadata:
     app.kubernetes.io/managed-by: Helm
     inference.profile: {{ $cfg.name | quote }}
 spec:
+  sessionAffinity: ClientIP
   selector:
     app: inference-server
     inference.profile: {{ $cfg.name | quote }}
